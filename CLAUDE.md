@@ -60,8 +60,39 @@ npm run build        # Build for production
 - **`CHANGELOG.md`** — Version history and what changed
 - **`examples/`** — Working demo HTML files (next-demo, vite-demo, express-demo, etc.) — read these to understand how the platform is used end-to-end
 - **`e2e/`** — Playwright E2E tests that exercise each demo — read these to understand what each demo should do
+- **`tests/vite-load.test.ts`** — Diagnostic test suite for real Vite 8 loading and createServer
 
 When working on a specific demo or feature, read the corresponding example HTML and E2E test first.
+
+## Real Vite 8 Support (In Progress)
+
+### Goal
+Make real Vite 8 runnable inside the browser runtime — replacing the custom `ViteDevServer` with actual `vite.createServer()`.
+
+### Current Status (June 2026)
+- `require('vite')` succeeds — returns full Vite 8.0.16 API surface (createServer, defineConfig, build, parseAst, etc.)
+- `vite.createServer({ server: { middlewareMode: true }, appType: 'custom' })` succeeds — returns a server with resolved config, middleware, SSR loader, and transform pipeline
+- **Not yet wired** through the Service Worker (browser requests don't reach Vite yet)
+
+### Shim Changes Made
+1. **`src/npm/resolver.ts`** — Fixed semver `=` prefix handling (e.g., `=0.133.0` from `@oxc-project/types`)
+2. **`src/shims/rolldown.ts`** (NEW) — Pure-JS shim for rolldown's 60+ native Rust exports. Intercepts all rolldown/* and @rolldown/* requires. Uses acorn for parse/parseAst, identity stubs for transform/minify, stub classes for TsconfigCache/Visitor/BuiltinPlugin, stub plugins for all vite*Plugin constructors
+3. **`src/runtime.ts`** — Added rolldown import, builtinModules entry, and intercept logic (both id-based and resolved-path-based)
+4. **`src/shims/crypto.ts`** — Added `crypto.hash()` (Node 21+ API)
+5. **`src/shims/fs.ts`** — Added `fs.promises.rm()` to FsPromises interface and promises object
+
+### Known Gaps
+- Rolldown stubs are minimal — `rolldown()` bundler, `dev()` engine, and `scan()` are no-ops
+- Lightningcss has native bindings not yet shimmed (used by Vite's CSS pipeline)
+- No Service Worker bridge yet for browser-side request handling
+- HMR via BroadcastChannel not wired
+- Custom `ViteDevServer` still active as fallback
+
+### Next Steps
+1. Wire real Vite middleware through Service Worker bridge
+2. Test actual file serving (HTML, JS, CSS transforms)
+3. Add minimal rolldown stubs for features Vite needs at runtime (transformSync for CSS, etc.)
+4. Gradually deprecate custom ViteDevServer
 
 ## Release Process
 

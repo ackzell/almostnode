@@ -818,7 +818,14 @@ async function importKey(
 // Exports
 // ============================================================================
 
+export function hash(algorithm: string, data: string | Buffer, outputEncoding?: string): string | Buffer {
+  const hash = createHash(algorithm);
+  hash.update(data);
+  return hash.digest(outputEncoding as any);
+}
+
 export default {
+  hash,
   randomBytes,
   randomFillSync,
   randomUUID,

@@ -46,6 +46,10 @@ export class IncomingMessage extends Readable {
   statusMessage?: string;
   socket: Socket;
 
+  get connection(): Socket {
+    return this.socket;
+  }
+
   private _body: Buffer | null = null;
 
   constructor(socket?: Socket) {

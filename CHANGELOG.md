@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.15] - 2026-06-10
+
+### Added
+- **Real Vite 8 support**: `require('vite')` succeeds (Vite 8.0.16), `vite.createServer({ middlewareMode: true })` creates a working dev server
+- **`RealViteServer` class** (`src/frameworks/real-vite-server.ts`): Wraps real Vite `createServer()` + http shim into a SW-registered server
+- **Rolldown pure-JS shim** (`src/shims/rolldown.ts`): Intercepts 60+ native Rust exports needed by Vite 8 (acorn parse, stubs for transform/minify/dev)
+- **Real Vite 8 demo page** (`examples/real-vite-demo.html` + `src/real-vite-demo.ts`): Installs vite@8 from npm, creates server, previews vanilla JS app served through Vite's real middleware
+- **`crypto.hash()`**: Node 21+ API added to crypto shim
+- **`fs.promises.rm()`**: Added to fs shim
+- **`req.connection` getter**: Added to http shim IncomingMessage
+
+### Fixed
+- **Resolver semver `=` prefix**: Handles `=0.133.0` ranges from `@oxc-project/types`
+- **Rolldown `oxcRuntimePlugin`**: Must be a callable function, not BuiltinPlugin instance
+- **`RealViteServer` factory pattern**: Uses `getVite()`/`getHttp()` factory functions instead of `runtime.require()` to avoid exposing internal API
+
 ## [0.2.14] - 2026-02-14
 
 ### Added

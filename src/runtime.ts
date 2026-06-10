@@ -39,6 +39,7 @@ import * as perfHooksShim from './shims/perf_hooks';
 import * as workerThreadsShim from './shims/worker_threads';
 import * as esbuildShim from './shims/esbuild';
 import * as rollupShim from './shims/rollup';
+import * as rolldownShim from './shims/rolldown';
 import * as v8Shim from './shims/v8';
 import * as readlineShim from './shims/readline';
 import * as tlsShim from './shims/tls';
@@ -339,6 +340,7 @@ const builtinModules: Record<string, unknown> = {
   worker_threads: workerThreadsShim,
   esbuild: esbuildShim,
   rollup: rollupShim,
+  rolldown: rolldownShim,
   v8: v8Shim,
   readline: readlineShim,
   tls: tlsShim,
@@ -857,7 +859,7 @@ ${code}
       return builtinModules[id];
     }
 
-    // Intercept rollup and esbuild - always use our shims
+    // Intercept rollup, esbuild, and rolldown - always use our shims
     // These packages have native binaries that don't work in browser
     if (id === 'rollup' || id.startsWith('rollup/') || id.startsWith('@rollup/')) {
       console.log('[runtime] Intercepted rollup:', id);
@@ -866,6 +868,10 @@ ${code}
     if (id === 'esbuild' || id.startsWith('esbuild/') || id.startsWith('@esbuild/')) {
       console.log('[runtime] Intercepted esbuild:', id);
       return builtinModules['esbuild'];
+    }
+    if (id === 'rolldown' || id.startsWith('rolldown/') || id.startsWith('@rolldown/')) {
+      console.log('[runtime] Intercepted rolldown:', id);
+      return builtinModules['rolldown'];
     }
     // Intercept prettier - uses createRequire which doesn't work in our runtime
     if (id === 'prettier' || id.startsWith('prettier/')) {
@@ -878,7 +884,7 @@ ${code}
       return builtinModules[resolved];
     }
 
-    // Also check if resolved path is to rollup, esbuild, or prettier in node_modules
+    // Also check if resolved path is to rollup, esbuild, rolldown, or prettier in node_modules
     if (resolved.includes('/node_modules/rollup/') ||
         resolved.includes('/node_modules/@rollup/')) {
       return builtinModules['rollup'];
@@ -886,6 +892,10 @@ ${code}
     if (resolved.includes('/node_modules/esbuild/') ||
         resolved.includes('/node_modules/@esbuild/')) {
       return builtinModules['esbuild'];
+    }
+    if (resolved.includes('/node_modules/rolldown/') ||
+        resolved.includes('/node_modules/@rolldown/')) {
+      return builtinModules['rolldown'];
     }
     if (resolved.includes('/node_modules/prettier/')) {
       return builtinModules['prettier'];

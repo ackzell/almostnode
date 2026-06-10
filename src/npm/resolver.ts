@@ -92,6 +92,11 @@ function satisfies(version: string, range: string): boolean {
 
   range = range.trim();
 
+  // Strip leading = prefix (npm uses =v to mean exact version)
+  if (range.startsWith('=') && !range.startsWith('>=') && !range.startsWith('<=')) {
+    range = range.slice(1).trim();
+  }
+
   // Exact version
   if (/^\d+\.\d+\.\d+/.test(range) && !range.includes(' ')) {
     const rangeMatch = range.match(/^(\d+\.\d+\.\d+(?:-[^\s]+)?)/);

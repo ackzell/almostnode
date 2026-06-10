@@ -70,6 +70,7 @@ export interface FsPromises {
   mkdir(path: PathLike, options?: { recursive?: boolean }): Promise<void>;
   unlink(path: PathLike): Promise<void>;
   rmdir(path: PathLike): Promise<void>;
+  rm(path: PathLike, options?: { recursive?: boolean; force?: boolean }): Promise<void>;
   rename(oldPath: PathLike, newPath: PathLike): Promise<void>;
   access(path: PathLike, mode?: number): Promise<void>;
   realpath(path: PathLike): Promise<string>;
@@ -343,6 +344,34 @@ export function createFsShim(vfs: VirtualFS, getCwd?: () => string): FsShim {
           resolve();
         } catch (err) {
           reject(err);
+        }
+      });
+    },
+    rm(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void> {
+      return new Promise((resolve, reject) => {
+        try {
+          if (vfs.existsSync(path)) {
+            if (vfs.statSync(path).isDirectory()) {
+              for (const entry of vfs.readdirSync(path)) {
+                const fullPath = path.endsWith('/') ? path + entry : path + '/' + entry;
+                if (vfs.statSync(fullPath).isDirectory()) {
+                  this.rm(fullPath, options);
+                } else {
+                  vfs.unlinkSync(fullPath);
+                }
+              }
+              vfs.rmdirSync(path);
+            } else {
+              vfs.unlinkSync(path);
+            }
+          }
+          resolve();
+        } catch (err) {
+          if (options?.force) {
+            resolve();
+          } else {
+            reject(err);
+          }
         }
       });
     },
