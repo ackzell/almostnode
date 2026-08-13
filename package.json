@@ -60,6 +60,16 @@
         "types": "./dist/next-plugin.d.ts",
         "default": "./dist/next-plugin.cjs"
       }
+    },
+    "./webcontainer": {
+      "import": {
+        "types": "./dist/webcontainer-api.d.ts",
+        "default": "./dist/webcontainer-api.mjs"
+      },
+      "require": {
+        "types": "./dist/webcontainer-api.d.ts",
+        "default": "./dist/webcontainer-api.cjs"
+      }
     }
   },
   "files": [

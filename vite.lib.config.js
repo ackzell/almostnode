@@ -55,6 +55,7 @@ export default defineConfig({
         index: resolve(__dirname, 'src/index.ts'),
         'vite-plugin': resolve(__dirname, 'src/vite-plugin.ts'),
         'next-plugin': resolve(__dirname, 'src/next-plugin.ts'),
+        'webcontainer-api': resolve(__dirname, 'src/webcontainer-api.ts'),
       },
       name: 'JustNode',
       formats: ['es', 'cjs'],

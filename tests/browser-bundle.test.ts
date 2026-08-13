@@ -10,6 +10,17 @@ describe('Browser bundle compatibility', () => {
   const distPath = path.join(__dirname, '../dist');
   const indexMjs = path.join(distPath, 'index.mjs');
 
+  /** Concatenate all built lib output (index + entry + shared chunks) */
+  function readAllBundles(): string {
+    let out = '';
+    for (const f of fs.readdirSync(distPath)) {
+      if (f.endsWith('.mjs') || f.endsWith('.cjs')) {
+        out += `\n=== ${f} ===\n` + fs.readFileSync(path.join(distPath, f), 'utf-8');
+      }
+    }
+    return out;
+  }
+
   it('should have built index.mjs', () => {
     expect(fs.existsSync(indexMjs)).toBe(true);
   });
@@ -64,7 +75,8 @@ describe('Browser bundle compatibility', () => {
   });
 
   it('should contain the browser-compatible fileURLToPath shim', () => {
-    const content = fs.readFileSync(indexMjs, 'utf-8');
+    // The multi-entry lib build code-splits into shared chunks, so search all of them
+    const content = readAllBundles();
 
     // The shim defines its own fileURLToPath function
     expect(content).toContain('function fileURLToPath');
