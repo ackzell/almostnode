@@ -837,6 +837,74 @@ vfs.writeFileSync('/src/main.jsx', `
 const server = new ViteDevServer(vfs, { port: 5173 });
 ```
 
+### Real Vite (Experimental)
+
+`ViteDevServer` above is a custom, lightweight Vite-like dev server. almostnode is also able to run **real Vite from npm** through `vite.createServer()`, exposed as `RealViteServer`. It wraps Vite's actual middleware (HTMl/JS/TS transforms, plugin pipeline) and serves it through the Service Worker bridge:
+
+```typescript
+import { VirtualFS, Runtime, PackageManager, RealViteServer, getServerBridge } from 'almostnode';
+
+const vfs = new VirtualFS();
+const runtime = new Runtime(vfs, { cwd: '/' });
+const npm = new PackageManager(vfs, { cwd: '/' });
+
+await npm.install('vite');  // Real Vite from the npm registry
+
+// Load vite + http through the runtime (they get shimmed along the way)
+vfs.writeFileSync('/load-vite.js', 'module.exports = require("vite");');
+vfs.writeFileSync('/load-http.js', 'module.exports = require("http");');
+const vite = runtime.runFile('/load-vite.js').exports;
+const http = runtime.runFile('/load-http.js').exports;
+
+const server = new RealViteServer(() => vite, () => http, {
+  root: '/',          // VFS project root — your /index.html + /src live here
+  port: 3000,
+  vfs,
+});
+
+await server.start();
+
+const bridge = getServerBridge();
+await bridge.initServiceWorker();
+bridge.registerServer(server.getHttpServer(), 3000);
+// Access at: /__virtual__/3000/
+```
+
+**Status:** experimental and in progress. `require('vite')`, `createServer({ middlewareMode: true })`, serving HTML/JS/TS through Vite's middleware, a custom `@vite/client` HMR stub, and **Vue SFCs via `@vitejs/plugin-vue`** (including sass preprocessing) currently work — exercised by `tests/vue-real-vite.test.ts` and the [Vue demo](/examples/vue-real-vite-demo.html). The tests/demo are verified against Vite 7; Vite 8 requires more pure-JS stubs for rolldown's native Rust APIs (and lightningcss). The custom `ViteDevServer` remains the production fallback. See `src/frameworks/real-vite-server.ts`.
+
+## Replacing WebContainers (`@webcontainer/api`)
+
+almostnode ships a **drop-in `@webcontainer/api`-compatible facade** at `almostnode/webcontainer`. If your app uses `WebContainer.boot()`, `fs`, `mount()`, `spawn()` and the `server-ready` event, you can swap the runtime by changing one import:
+
+```diff
+-import { WebContainer } from '@webcontainer/api';
++import { WebContainer } from 'almostnode/webcontainer';
+
+ const wc = await WebContainer.boot();
+ await wc.mount({ 'package.json': { file: { contents: '...' } } });
+```
+
+The facade supports the surface used by browser playgrounds:
+
+| `@webcontainer/api` | `almostnode/webcontainer` |
+|---|---|
+| `WebContainer.boot({ workdirName })` | backed by `createContainer()` (vfs + runtime + npm + bridge) |
+| `wc.fs.readFile/writeFile/mkdir/readdir/rm/rename/watch` | thin async wrappers over `VirtualFS` (relative paths, `withFileTypes` Dirents, ENOENT rejection) |
+| `wc.mount(FileSystemTree, { mountPoint })` | walks nested trees; string + `Uint8Array` contents |
+| `wc.spawn(cmd, args, { env, cwd })` | `{ output, input, exit, kill }` process API (merged stdout+stderr stream, stdin, exit-code promise) |
+| `wc.on('server-ready', (port, url) => …)` | fires from the ServerBridge; url = `{host}/__virtual__/{port}/` |
+| `wc.on('port' / 'error')`, `wc.path`, `wc.teardown()` | mapped |
+| `wc.export('…', { format: 'json' })`, `reloadPreview()`, `configureAPIKey()`, `auth` | json export + no-op stubs |
+
+**Notes for migration:**
+
+- **Preview iframe:** the `server-ready` URL is your own origin's `/__virtual__/{port}/`, served by the almostnode service worker. Your app must serve `/__sw__.js` (e.g. from `public/`) and call `wc.initServiceWorker()` (also auto-tried in `boot()` in the browser).
+- **Package managers:** `npm`, `pnpm`, `yarn` and `bun` are all handled by the generic package-manager agent in the `child_process` shim — `pnpm install --prefer-offline` and `pnpm run dev` work like `npm`.
+- **Dev servers:** `pnpm run dev` runs the real `vite` CLI (or `node server.js`), so your `vite.config.js` plugins — including `@vitejs/plugin-vue` — are honored as-is. Any http server that calls `.listen()` auto-registers and emits `server-ready`.
+- **Not yet implemented:** binary `mount()` snapshots, `export` as `zip`/`binary`, and StackBlitz `auth`/`configureAPIKey` (no-ops so imports compile).
+
+The facade is unit-tested against the exact call patterns used by real WebContainers playgrounds (`tests/webcontainer-api.test.ts`).
+
 ### Next.js
 
 Supports both **Pages Router** and **App Router**:
@@ -949,6 +1017,8 @@ Start the dev server with `npm run dev` and open any demo at `http://localhost:5
 |------|------|-------------|
 | **Next.js** | `/examples/next-demo.html` | Pages & App Router, CSS modules, route groups, API routes, HMR |
 | **Vite** | `/examples/vite-demo.html` | Vite dev server with React and HMR |
+| **Real Vite** | `/examples/real-vite-demo.html` | **Experimental** — real `vite.createServer()` from npm running in the browser (Vite 7/8, see [Real Vite](#real-vite-experimental)) |
+| **Vue + Real Vite** | `/examples/vue-real-vite-demo.html` | **Experimental** — real Vite 7 serving `.vue` via `@vitejs/plugin-vue` with sass + HMR |
 | **Vitest** | `/examples/vitest-demo.html` | Real vitest execution with xterm.js terminal and watch mode |
 | **Express** | `/examples/express-demo.html` | Express.js HTTP server running in the browser |
 | **Convex** | `/examples/demo-convex-app.html` | Real-time todo app with Convex cloud deployment |

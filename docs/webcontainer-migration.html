@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Replacing WebContainers — almostnode docs</title>
+  <meta name="description" content="Swap @webcontainer/api for almostnode's drop-in WebContainers-compatible facade — boot, mount, spawn, fs, and server-ready.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://almostnode.dev/docs/webcontainer-migration.html">
+  <meta property="og:title" content="Replacing WebContainers — almostnode docs">
+  <meta property="og:description" content="Swap @webcontainer/api for almostnode's drop-in WebContainers-compatible facade — boot, mount, spawn, fs, and server-ready.">
+  <meta property="og:image" content="https://almostnode.dev/og-image.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Replacing WebContainers — almostnode docs">
+  <meta name="twitter:description" content="Swap @webcontainer/api for almostnode's drop-in WebContainers-compatible facade — boot, mount, spawn, fs, and server-ready.">
+  <meta name="twitter:image" content="https://almostnode.dev/og-image.png">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+<div class="topbar">
+  <label class="menu-toggle" for="sidebar-check">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </label>
+  <a href="../" class="topbar-logo"><span>almostnode</span></a>
+  <span class="topbar-sep">/</span>
+  <span class="topbar-section">Docs</span>
+  <ul class="topbar-links">
+    <li><a href="https://github.com/macaly/almostnode">GitHub</a></li>
+    <li><a href="https://www.npmjs.com/package/almostnode">npm</a></li>
+  </ul>
+</div>
+
+<input type="checkbox" id="sidebar-check">
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sidebar-group">
+      <div class="sidebar-label">Guide</div>
+      <a href="./">Getting Started</a>
+      <a href="./core-concepts.html">Core Concepts</a>
+      <a href="./security.html">Security</a>
+      <a href="./webcontainer-migration.html" class="active">Replacing WebContainers</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-label">Frameworks</div>
+      <a href="./nextjs-guide.html">Next.js</a>
+      <a href="./vite-guide.html">Vite</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-label">Tutorials</div>
+      <a href="./tutorial-editor.html">Editor + Preview</a>
+    </div>
+    <div class="sidebar-group">
+      <div class="sidebar-label">Reference</div>
+      <a href="./api-reference.html">API Reference</a>
+    </div>
+  </nav>
+
+  <main class="content">
+    <h1>Replacing WebContainers</h1>
+    <p class="lead">almostnode ships a drop-in <code>@webcontainer/api</code>-compatible facade at <code>almostnode/webcontainer</code>. If your app uses <code>WebContainer.boot()</code>, <code>fs</code>, <code>mount()</code>, <code>spawn()</code> and the <code>server-ready</code> event, you can swap runtimes by changing one import.</p>
+
+    <h2>Quick swap</h2>
+    <p>Point your existing import at <code>almostnode/webcontainer</code> — the rest of your code stays the same:</p>
+    <pre><code><span class="cm">// Before</span>
+<span class="kw">import</span> <span class="op">{</span> <span class="fn">WebContainer</span> <span class="op">}</span> <span class="kw">from</span> <span class="str">'@webcontainer/api'</span><span class="op">;</span>
+
+<span class="cm">// After</span>
+<span class="kw">import</span> <span class="op">{</span> <span class="fn">WebContainer</span> <span class="op">}</span> <span class="kw">from</span> <span class="str">'almostnode/webcontainer'</span><span class="op">;</span>
+
+<span class="kw">const</span> wc <span class="op">=</span> <span class="kw">await</span> <span class="fn">WebContainer</span><span class="op">.</span><span class="fn">boot</span><span class="op">();</span>
+<span class="kw">await</span> wc<span class="op">.</span><span class="fn">mount</span><span class="op">({</span> <span class="str">'package.json'</span><span class="op">:</span> <span class="op">{</span> <span class="fn">file</span><span class="op">:</span> <span class="op">{</span> <span class="fn">contents</span><span class="op">:</span> <span class="str">'...'</span> <span class="op">}</span> <span class="op">}</span> <span class="op">});</span></code></pre>
+
+    <h2>API mapping</h2>
+    <p>The facade covers the surface used by browser playgrounds. Paths are relative to the working directory, and missing files reject with <code>ENOENT</code>, matching WebContainers.</p>
+    <table>
+      <tr><th><code>@webcontainer/api</code></th><th><code>almostnode/webcontainer</code></th></tr>
+      <tr><td><code>WebContainer.boot({ workdirName })</code></td><td>Backed by <code>createContainer()</code> (vfs + runtime + npm + bridge)</td></tr>
+      <tr><td><code>wc.fs.readFile/writeFile/mkdir/readdir/rm/rename/watch</code></td><td>Thin async wrappers over <code>VirtualFS</code> (relative paths, <code>withFileTypes</code> Dirents, ENOENT rejection)</td></tr>
+      <tr><td><code>wc.mount(FileSystemTree, { mountPoint })</code></td><td>Walks nested trees; string + <code>Uint8Array</code> contents</td></tr>
+      <tr><td><code>wc.spawn(cmd, args, { env, cwd })</code></td><td><code>{ output, input, exit, kill }</code> process API (merged stdout+stderr stream, stdin, exit-code promise)</td></tr>
+      <tr><td><code>wc.on('server-ready', (port, url) =&gt; …)</code></td><td>Fires from the ServerBridge; url = <code>{host}/__virtual__/{port}/</code></td></tr>
+      <tr><td><code>wc.on('port' / 'error')</code>, <code>wc.path</code>, <code>wc.teardown()</code></td><td>Mapped</td></tr>
+      <tr><td><code>wc.export('…', { format: 'json' })</code>, <code>reloadPreview()</code>, <code>configureAPIKey()</code>, <code>auth</code></td><td>JSON export + no-op stubs</td></tr>
+    </table>
+
+    <h2>Preview iframe &amp; service worker</h2>
+    <p>The <code>server-ready</code> URL is your own origin's <code>/__virtual__/{port}/</code>, served by the almostnode service worker. Your app must serve <code>/__sw__.js</code> (e.g. from <code>public/</code>) and call <code>wc.initServiceWorker()</code> — <code>boot()</code> also tries it automatically in the browser.</p>
+    <pre><code><span class="kw">await</span> wc<span class="op">.</span><span class="fn">initServiceWorker</span><span class="op">();</span>
+wc<span class="op">.</span><span class="fn">on</span><span class="op">(</span><span class="str">'server-ready'</span><span class="op">,</span> <span class="op">(</span>port<span class="op">,</span> url<span class="op">)</span> <span class="op">=&gt;</span> <span class="op">{</span>
+  <span class="cm">// point an iframe at url — e.g. /__virtual__/5173/</span>
+<span class="op">});</span></code></pre>
+    <p>See <a href="./security.html">Security &amp; Sandbox</a> for service worker setup options, and the <a href="https://github.com/macaly/almostnode#service-worker-setup">README</a> for hosting guidance.</p>
+
+    <h2>Package managers &amp; dev servers</h2>
+    <p><code>npm</code>, <code>pnpm</code>, <code>yarn</code> and <code>bun</code> are all handled by the generic package-manager agent in the <code>child_process</code> shim — <code>pnpm install --prefer-offline</code> and <code>pnpm run dev</code> work like <code>npm</code>.</p>
+    <p><code>pnpm run dev</code> runs the real <code>vite</code> CLI (or <code>node server.js</code>), so your <code>vite.config.js</code> plugins — including <code>@vitejs/plugin-vue</code> — are honored as-is. Any http server that calls <code>.listen()</code> auto-registers and emits <code>server-ready</code>. See the <a href="./vite-guide.html">Vite Guide</a> and the <a href="../examples/vue-real-vite-demo.html">Vue + Real Vite demo</a>.</p>
+
+    <h2>Not yet implemented</h2>
+    <ul>
+      <li>Binary <code>mount()</code> snapshots (<code>Uint8Array</code> / <code>ArrayBuffer</code>)</li>
+      <li><code>export</code> as <code>zip</code> / <code>binary</code></li>
+      <li>StackBlitz <code>auth</code> / <code>configureAPIKey</code> — no-ops so imports compile unchanged</li>
+    </ul>
+
+    <div class="callout">
+      <div class="callout-title">Verified</div>
+      <p>The facade is unit-tested against the exact call patterns used by real WebContainers playgrounds (<code>tests/webcontainer-api.test.ts</code>), including <code>pnpm run dev</code> emitting <code>server-ready</code> on port 5173.</p>
+    </div>
+
+    <div class="page-nav">
+      <a href="./security.html">
+        <div class="label">Previous</div>
+        <div class="title">Security &amp; Sandbox</div>
+      </a>
+      <a href="./nextjs-guide.html" class="next">
+        <div class="label">Next</div>
+        <div class="title">Next.js Guide</div>
+      </a>
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

@@ -39,6 +39,7 @@
       <a href="./">Getting Started</a>
       <a href="./core-concepts.html">Core Concepts</a>
       <a href="./security.html">Security</a>
+      <a href="./webcontainer-migration.html">Replacing WebContainers</a>
     </div>
     <div class="sidebar-group">
       <div class="sidebar-label">Frameworks</div>
@@ -244,6 +245,36 @@ repl<span class="op">.</span><span class="fn">eval</span><span class="op">(</spa
       <div class="callout-title">Security</div>
       <p>You must provide either a <code>sandbox</code> URL or set <code>dangerouslyAllowSameOrigin: true</code>. The sandbox option is recommended for untrusted code.</p>
     </div>
+
+    <!-- WebContainer -->
+    <h2>WebContainer</h2>
+    <p>A drop-in <code>@webcontainer/api</code>-compatible facade backed by almostnode. Import from <code>almostnode/webcontainer</code>. See the <a href="./webcontainer-migration.html">Replacing WebContainers</a> guide.</p>
+    <div class="method-sig">
+      <span class="fn">WebContainer</span><span class="op">.</span><span class="fn">boot</span>(<span class="ty">options</span>?: BootOptions): Promise&lt;WebContainer&gt;
+    </div>
+    <p>Boots a WebContainer instance backed by <code>createContainer()</code>. In the browser it also registers the service worker (best-effort) so <code>/__virtual__/{port}/</code> preview URLs work.</p>
+
+    <h3>Methods</h3>
+    <table>
+      <thead><tr><th>Method</th><th>Signature</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>mount</code></td><td><code>(tree: FileSystemTree, options?): Promise&lt;void&gt;</code></td><td>Mount a file tree (string or <code>Uint8Array</code> contents)</td></tr>
+        <tr><td><code>spawn</code></td><td><code>(cmd, args?, options?): Promise&lt;WebContainerProcess&gt;</code></td><td>Spawn a process; returns <code>{ output, input, exit, kill }</code></td></tr>
+        <tr><td><code>on</code></td><td><code>(event, listener): () =&gt; void</code></td><td>Listen for <code>'server-ready'</code>, <code>'port'</code>, <code>'error'</code></td></tr>
+        <tr><td><code>export</code></td><td><code>(path?, options?): Promise&lt;FileSystemTree&gt;</code></td><td>Export the filesystem (json format)</td></tr>
+        <tr><td><code>initServiceWorker</code></td><td><code>(options?): Promise&lt;void&gt;</code></td><td>Register the almostnode service worker</td></tr>
+        <tr><td><code>teardown</code></td><td><code>(): void</code></td><td>Kill active processes and clear caches</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Properties</h3>
+    <table>
+      <thead><tr><th>Property</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>fs</code></td><td><code>FileSystemAPI</code></td><td>Async fs (readFile/writeFile/mkdir/readdir/rm/rename/watch) with relative paths</td></tr>
+        <tr><td><code>path</code></td><td><code>string</code></td><td>The <code>PATH</code> used for spawned processes</td></tr>
+      </tbody>
+    </table>
 
     <!-- PackageManager -->
     <h2>PackageManager</h2>

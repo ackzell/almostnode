@@ -39,6 +39,7 @@
       <a href="./" class="active">Getting Started</a>
       <a href="./core-concepts.html">Core Concepts</a>
       <a href="./security.html">Security</a>
+      <a href="./webcontainer-migration.html">Replacing WebContainers</a>
     </div>
     <div class="sidebar-group">
       <div class="sidebar-label">Frameworks</div>
@@ -68,6 +69,11 @@
       <li>Built-in <strong>Next.js and Vite dev servers</strong> with HMR and file-based routing</li>
       <li>A <strong>service worker bridge</strong> that makes virtual servers accessible via real URLs</li>
     </ul>
+
+    <div class="callout">
+      <div class="callout-title">Using WebContainers today?</div>
+      <p>almostnode ships a drop-in <code>@webcontainer/api</code>-compatible facade at <code>almostnode/webcontainer</code> — swap one import and keep <code>boot()</code>, <code>mount()</code>, <code>spawn()</code> and <code>fs</code>. See <a href="./webcontainer-migration.html">Replacing WebContainers</a>.</p>
+    </div>
 
     <h2>Installation</h2>
     <pre><code>npm install almostnode</code></pre>
@@ -202,6 +208,7 @@ runButton<span class="op">.</span><span class="fn">addEventListener</span><span 
     <ul>
       <li><a href="./core-concepts.html">Core Concepts</a> — understand the architecture: VirtualFS, Runtime, PackageManager, and ServerBridge</li>
       <li><a href="./security.html">Security &amp; Sandbox</a> — cross-origin isolation, security modes, and service worker setup</li>
+      <li><a href="./webcontainer-migration.html">Replacing WebContainers</a> — swap <code>@webcontainer/api</code> for <code>almostnode/webcontainer</code></li>
       <li><a href="./nextjs-guide.html">Next.js Guide</a> — run a full Next.js dev server with App Router, HMR, and CSS Modules</li>
       <li><a href="./vite-guide.html">Vite Guide</a> — set up Vite with React and hot module replacement</li>
       <li><a href="./tutorial-editor.html">Tutorial: Editor + Preview</a> — build a file editor with live Next.js preview and cross-origin sandbox</li>
