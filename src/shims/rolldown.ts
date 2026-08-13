@@ -83,12 +83,22 @@ export async function parseAstAsync(input: string, options?: any): Promise<any> 
 }
 
 // ==================== Transform ====================
-export function transformSync(code: string, _filename: string, _options?: any): { code: string; map: null } {
-  return { code, map: null };
+export function transformSync(_filename: string, code: string, _options?: any): { code: string; map: null; errors: []; warnings: [] } {
+  if (typeof window !== 'undefined' && (window as any).__esbuild) {
+    try {
+      const esbuild = (window as any).__esbuild;
+      const loader = (_options?.lang || 'ts') as 'ts' | 'tsx' | 'jsx' | 'js';
+      const result = esbuild.transformSync(code, { loader, sourcemap: false });
+      return { code: result.code, map: result.map || null, errors: [], warnings: [] };
+    } catch {
+      // Fall through to identity transform
+    }
+  }
+  return { code, map: null, errors: [], warnings: [] };
 }
 
-export async function transform(code: string, filename: string, options?: any): Promise<{ code: string; map: null }> {
-  return transformSync(code, filename, options);
+export async function transform(filename: string, code: string, options?: any): Promise<{ code: string; map: null; errors: []; warnings: [] }> {
+  return transformSync(filename, code, options);
 }
 
 // ==================== Minify ====================

@@ -247,49 +247,75 @@ self.addEventListener('fetch', (event) => {
   // Check if this is a virtual server request
   const match = url.pathname.match(/^\/__virtual__\/(\d+)(\/.*)?$/);
 
-  if (!match) {
-    // Not a virtual request - but check if it's from a virtual context
-    // This handles plain <a href="/about"> links and asset requests (images, scripts)
-    // that should stay within the virtual server
-    const referer = event.request.referrer;
-    if (referer) {
-      try {
-        const refererUrl = new URL(referer);
-        const refererMatch = refererUrl.pathname.match(/^\/__virtual__\/(\d+)/);
-        if (refererMatch) {
-          // Request from within a virtual server context
-          const virtualPrefix = refererMatch[0];
-          const virtualPort = parseInt(refererMatch[1], 10);
-          const targetPath = url.pathname + url.search;
-
-          if (event.request.mode === 'navigate') {
-            // Navigation requests: redirect to include the virtual prefix
-            const redirectUrl = url.origin + virtualPrefix + targetPath;
-            DEBUG && console.log('[SW] Redirecting navigation from virtual context:', url.pathname, '->', redirectUrl);
-            event.respondWith(Response.redirect(redirectUrl, 302));
-            return;
-          } else {
-            // Non-navigation requests (images, scripts, etc.): forward to virtual server
-            DEBUG && console.log('[SW] Forwarding resource from virtual context:', url.pathname);
-            event.respondWith(handleVirtualRequest(event.request, virtualPort, targetPath));
-            return;
-          }
-        }
-      } catch (e) {
-        // Invalid referer URL, ignore
-      }
-    }
-    // Not a virtual request, let it pass through
+  if (match) {
+    DEBUG && console.log('[SW] Virtual request:', url.pathname);
+    const port = parseInt(match[1], 10);
+    const path = match[2] || '/';
+    event.respondWith(handleVirtualRequest(event.request, port, path + url.search));
     return;
   }
 
-  DEBUG && console.log('[SW] Virtual request:', url.pathname);
-
-  const port = parseInt(match[1], 10);
-  const path = match[2] || '/';
-
-  event.respondWith(handleVirtualRequest(event.request, port, path + url.search));
+  // Not a virtual URL — detect virtual context via client or referer
+  event.respondWith(handleNonVirtualFetch(event, url));
 });
+
+/**
+ * Handle a non-virtual URL by detecting virtual context from client or referer.
+ * Client-based detection is preferred because it works for ES module sub-imports
+ * where the Referer header carries the importing module's URL (which lacks the
+ * virtual prefix), while the client URL always reflects the actual page URL.
+ */
+async function handleNonVirtualFetch(event, url) {
+  // Try client-based detection first (most reliable for sub-imports)
+  try {
+    const client = await self.clients.get(event.clientId);
+    if (client) {
+      const clientUrl = new URL(client.url);
+      const clientMatch = clientUrl.pathname.match(/^\/__virtual__\/(\d+)/);
+      if (clientMatch) {
+        const virtualPort = parseInt(clientMatch[1], 10);
+        const targetPath = url.pathname + url.search;
+
+        if (event.request.mode === 'navigate') {
+          DEBUG && console.log('[SW] Redirecting navigation from client virtual context:', url.pathname);
+          return Response.redirect(url.origin + clientMatch[0] + targetPath, 302);
+        }
+
+        DEBUG && console.log('[SW] Forwarding resource from client virtual context:', url.pathname);
+        return handleVirtualRequest(event.request, virtualPort, targetPath);
+      }
+    }
+  } catch (e) {
+    // Invalid client URL, ignore
+  }
+
+  // Fallback: referer-based detection
+  const referer = event.request.referrer;
+  if (referer) {
+    try {
+      const refererUrl = new URL(referer);
+      const refererMatch = refererUrl.pathname.match(/^\/__virtual__\/(\d+)/);
+      if (refererMatch) {
+        const virtualPrefix = refererMatch[0];
+        const virtualPort = parseInt(refererMatch[1], 10);
+        const targetPath = url.pathname + url.search;
+
+        if (event.request.mode === 'navigate') {
+          DEBUG && console.log('[SW] Redirecting navigation from referer virtual context:', url.pathname, '->', url.origin + virtualPrefix + targetPath);
+          return Response.redirect(url.origin + virtualPrefix + targetPath, 302);
+        }
+
+        DEBUG && console.log('[SW] Forwarding resource from referer virtual context:', url.pathname);
+        return handleVirtualRequest(event.request, virtualPort, targetPath);
+      }
+    } catch (e) {
+      // Invalid referer URL, ignore
+    }
+  }
+
+  // Not a virtual context request, let it pass through to the network
+  return fetch(event.request);
+}
 
 /**
  * Handle a request to a virtual server

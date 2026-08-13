@@ -318,8 +318,13 @@ export function initChildProcess(vfs: VirtualFS): void {
     }
   });
 
-  // Create custom 'npm' command that runs scripts from package.json
-  const npmCommand = defineCommand('npm', async (args, ctx) => {
+  /**
+   * Create a package-manager custom command (npm/pnpm/yarn/bun) that runs
+   * scripts from package.json and bridges installs to PackageManager.
+   * This keeps almostnode framework/package-manager agnostic — the same
+   * generic engine powers `npm install`, `pnpm run dev`, etc.
+   */
+  const createPackageManagerCommand = (pm: string) => defineCommand(pm, async (args, ctx) => {
     if (!currentVfs) {
       return { stdout: '', stderr: 'VFS not initialized\n', exitCode: 1 };
     }
@@ -328,7 +333,7 @@ export function initChildProcess(vfs: VirtualFS): void {
 
     if (!subcommand || subcommand === 'help' || subcommand === '--help') {
       return {
-        stdout: 'Usage: npm <command>\n\nCommands:\n  run <script>   Run a script from package.json\n  start          Run the start script\n  test           Run the test script\n  install [pkg]  Install packages\n  ls             List installed packages\n',
+        stdout: `Usage: ${pm} <command>\n\nCommands:\n  run <script>   Run a script from package.json\n  start          Run the start script\n  test           Run the test script\n  install [pkg]  Install packages\n  ls             List installed packages\n`,
         stderr: '',
         exitCode: 0,
       };
@@ -337,24 +342,24 @@ export function initChildProcess(vfs: VirtualFS): void {
     switch (subcommand) {
       case 'run':
       case 'run-script':
-        return handleNpmRun(args.slice(1), ctx);
+        return handleNpmRun(args.slice(1), ctx, pm);
       case 'start':
-        return handleNpmRun(['start'], ctx);
+        return handleNpmRun(['start'], ctx, pm);
       case 'test':
       case 't':
       case 'tst':
-        return handleNpmRun(['test'], ctx);
+        return handleNpmRun(['test'], ctx, pm);
       case 'install':
       case 'i':
       case 'add':
-        return handleNpmInstall(args.slice(1), ctx);
+        return handleNpmInstall(args.slice(1), ctx, pm);
       case 'ls':
       case 'list':
-        return handleNpmList(ctx);
+        return handleNpmList(ctx, pm);
       default:
         return {
           stdout: '',
-          stderr: `npm ERR! Unknown command: "${subcommand}"\n`,
+          stderr: `${pm} ERR! Unknown command: "${subcommand}"\n`,
           exitCode: 1,
         };
     }
@@ -369,21 +374,27 @@ export function initChildProcess(vfs: VirtualFS): void {
       PATH: '/usr/local/bin:/usr/bin:/bin:/node_modules/.bin',
       NODE_ENV: 'development',
     },
-    customCommands: [nodeCommand, npmCommand],
+    customCommands: [
+      nodeCommand,
+      createPackageManagerCommand('npm'),
+      createPackageManagerCommand('pnpm'),
+      createPackageManagerCommand('yarn'),
+      createPackageManagerCommand('bun'),
+    ],
   });
 }
 
 /**
  * Read and parse package.json from the VFS
  */
-function readPackageJson(cwd: string): { pkgJson: PackageJson; error?: undefined } | { pkgJson?: undefined; error: JustBashExecResult } {
+function readPackageJson(cwd: string, pm: string = 'npm'): { pkgJson: PackageJson; error?: undefined } | { pkgJson?: undefined; error: JustBashExecResult } {
   const pkgJsonPath = `${cwd}/package.json`.replace(/\/+/g, '/');
 
   if (!currentVfs!.existsSync(pkgJsonPath)) {
     return {
       error: {
         stdout: '',
-        stderr: 'npm ERR! no package.json found\n',
+        stderr: `${pm} ERR! no package.json found\n`,
         exitCode: 1,
       },
     };
@@ -396,7 +407,7 @@ function readPackageJson(cwd: string): { pkgJson: PackageJson; error?: undefined
     return {
       error: {
         stdout: '',
-        stderr: 'npm ERR! Failed to parse package.json\n',
+        stderr: `${pm} ERR! Failed to parse package.json\n`,
         exitCode: 1,
       },
     };
@@ -406,15 +417,15 @@ function readPackageJson(cwd: string): { pkgJson: PackageJson; error?: undefined
 /**
  * Handle `npm run [script]` — execute a script from package.json
  */
-async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBashExecResult> {
+async function handleNpmRun(args: string[], ctx: CommandContext, pm: string = 'npm'): Promise<JustBashExecResult> {
   const scriptName = args[0];
 
   // "npm run" with no script name: list available scripts
   if (!scriptName) {
-    return listScripts(ctx);
+    return listScripts(ctx, pm);
   }
 
-  const result = readPackageJson(ctx.cwd);
+  const result = readPackageJson(ctx.cwd, pm);
   if (result.error) return result.error;
   const pkgJson = result.pkgJson;
 
@@ -423,12 +434,12 @@ async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBa
 
   if (!scriptCommand) {
     const available = Object.keys(scripts);
-    let msg = `npm ERR! Missing script: "${scriptName}"\n`;
+    let msg = `${pm} ERR! Missing script: "${scriptName}"\n`;
     if (available.length > 0) {
-      msg += '\nnpm ERR! Available scripts:\n';
+      msg += '\n' + pm + ' ERR! Available scripts:\n';
       for (const name of available) {
-        msg += `npm ERR!   ${name}\n`;
-        msg += `npm ERR!     ${scripts[name]}\n`;
+        msg += `${pm} ERR!   ${name}\n`;
+        msg += `${pm} ERR!     ${scripts[name]}\n`;
       }
     }
     return { stdout: '', stderr: msg, exitCode: 1 };
@@ -437,7 +448,7 @@ async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBa
   if (!ctx.exec) {
     return {
       stdout: '',
-      stderr: 'npm ERR! Script execution not available in this context\n',
+      stderr: `${pm} ERR! Script execution not available in this context\n`,
       exitCode: 1,
     };
   }
@@ -494,8 +505,8 @@ async function handleNpmRun(args: string[], ctx: CommandContext): Promise<JustBa
 /**
  * List available scripts from package.json (when `npm run` is called with no args)
  */
-function listScripts(ctx: CommandContext): JustBashExecResult {
-  const result = readPackageJson(ctx.cwd);
+function listScripts(ctx: CommandContext, pm: string = 'npm'): JustBashExecResult {
+  const result = readPackageJson(ctx.cwd, pm);
   if (result.error) return result.error;
   const pkgJson = result.pkgJson;
 
@@ -527,9 +538,9 @@ function listScripts(ctx: CommandContext): JustBashExecResult {
 /**
  * Handle `npm install [pkg]` — bridge to PackageManager
  */
-async function handleNpmInstall(args: string[], ctx: CommandContext): Promise<JustBashExecResult> {
+async function handleNpmInstall(args: string[], ctx: CommandContext, pm: string = 'npm'): Promise<JustBashExecResult> {
   const { PackageManager } = await import('../npm/index');
-  const pm = new PackageManager(currentVfs!, { cwd: ctx.cwd });
+  const pmInstance = new PackageManager(currentVfs!, { cwd: ctx.cwd });
 
   let stdout = '';
 
@@ -537,14 +548,16 @@ async function handleNpmInstall(args: string[], ctx: CommandContext): Promise<Ju
     const pkgArgs = args.filter(a => !a.startsWith('-'));
     if (pkgArgs.length === 0) {
       // npm install (no package name) -> install from package.json
-      const installResult = await pm.installFromPackageJson({
+      // include devDependencies, matching real npm/pnpm behavior
+      const installResult = await pmInstance.installFromPackageJson({
+        includeDev: true,
         onProgress: (msg: string) => { stdout += msg + '\n'; },
       });
       stdout += `added ${installResult.added.length} packages\n`;
     } else {
       // npm install <pkg> [<pkg> ...]
       for (const arg of pkgArgs) {
-        const installResult = await pm.install(arg, {
+        const installResult = await pmInstance.install(arg, {
           save: true,
           onProgress: (msg: string) => { stdout += msg + '\n'; },
         });
@@ -554,14 +567,14 @@ async function handleNpmInstall(args: string[], ctx: CommandContext): Promise<Ju
     return { stdout, stderr: '', exitCode: 0 };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    return { stdout, stderr: `npm ERR! ${msg}\n`, exitCode: 1 };
+    return { stdout, stderr: `${pm} ERR! ${msg}\n`, exitCode: 1 };
   }
 }
 
 /**
  * Handle `npm ls` — list installed packages
  */
-async function handleNpmList(ctx: CommandContext): Promise<JustBashExecResult> {
+async function handleNpmList(ctx: CommandContext, _pm: string = 'npm'): Promise<JustBashExecResult> {
   const { PackageManager } = await import('../npm/index');
   const pm = new PackageManager(currentVfs!, { cwd: ctx.cwd });
   const packages = pm.list();
@@ -772,6 +785,91 @@ export function spawnSync(
   throw new Error(
     'spawnSync is not supported in browser environment. Use spawn() instead.'
   );
+}
+
+export interface SpawnProcessOptions {
+  cwd?: string;
+  env?: Record<string, string | number | boolean>;
+}
+
+export interface SpawnProcessHandle {
+  /** Merged stdout + stderr stream (like WebContainers' WebContainerProcess.output) */
+  output: ReadableStream<string>;
+  /** Stdin stream */
+  input: WritableStream<string>;
+  /** Resolves with the exit code when the process exits */
+  exit: Promise<number>;
+  /** Abort signal for this process */
+  signal: AbortSignal;
+  /** Kill the process */
+  kill: () => void;
+}
+
+/**
+ * Spawn a process with streaming output, stdin, and abort support.
+ * This is the primitive used by the WebContainers-compatible facade
+ * (`almostnode/webcontainer`) and can be used directly by consumers who
+ * want per-process output streams instead of buffered `exec()`.
+ *
+ * Only one streaming process should run at a time (matching the existing
+ * `container.run()` streaming model) — spawning a second long-running
+ * process while one is active is not supported yet.
+ */
+export function spawnProcess(
+  command: string,
+  args: string[] = [],
+  options: SpawnProcessOptions = {}
+): SpawnProcessHandle {
+  const controller = new AbortController();
+  const env = options.env
+    ? Object.fromEntries(Object.entries(options.env).map(([k, v]) => [k, String(v)]))
+    : undefined;
+
+  let outputController: ReadableStreamDefaultController<string> | null = null;
+  const output = new ReadableStream<string>({
+    start(c) {
+      outputController = c;
+    },
+  });
+
+  const input = new WritableStream<string>({
+    write(chunk) {
+      sendStdin(chunk);
+    },
+  });
+
+  const fullCommand = args.length > 0
+    ? `${command} ${args.map(arg => (arg.includes(' ') ? `"${arg}"` : arg)).join(' ')}`
+    : command;
+
+  const exit = new Promise<number>((resolve) => {
+    setStreamingCallbacks({
+      onStdout: (data) => {
+        try { outputController?.enqueue(data); } catch { /* stream closed */ }
+      },
+      onStderr: (data) => {
+        try { outputController?.enqueue(data); } catch { /* stream closed */ }
+      },
+      signal: controller.signal,
+    });
+
+    exec(fullCommand, { cwd: options.cwd, env }, (error, _stdout, _stderr) => {
+      clearStreamingCallbacks();
+      try { outputController?.close(); } catch { /* already closed */ }
+      const code = error && typeof (error as { code?: unknown }).code === 'number'
+        ? (error as unknown as { code: number }).code
+        : 0;
+      resolve(code);
+    });
+  });
+
+  return {
+    output,
+    input,
+    exit,
+    signal: controller.signal,
+    kill: () => controller.abort(),
+  };
 }
 
 /**

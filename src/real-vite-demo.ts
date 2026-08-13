@@ -28,21 +28,28 @@ function createProjectFiles(vfs: VirtualFS): void {
       <button id="inc-btn">+1</button>
     </div>
   </div>
-  <script type="module" src="/src/app.js"></script>
+  <script type="module" src="/src/app.ts"></script>
 </body>
 </html>`);
 
   vfs.mkdirSync('/src', { recursive: true });
 
-  vfs.writeFileSync('/src/app.js', `
-const countEl = document.getElementById('count');
-const btn = document.getElementById('inc-btn');
+  vfs.writeFileSync('/src/app.ts', `
+import { debounce } from 'lodash-es';
+
+const countEl = document.getElementById('count') as HTMLElement;
+const btn = document.getElementById('inc-btn') as HTMLElement;
 let count = 0;
-btn.addEventListener('click', () => {
+
+const updateCount = (): void => {
   count++;
-  countEl.textContent = count;
-});
-console.log('Real Vite 8 app loaded!');
+  countEl.textContent = String(count);
+};
+
+const debouncedUpdate = debounce(updateCount, 200);
+btn.addEventListener('click', debouncedUpdate);
+
+console.log('Real Vite 8 app loaded with TypeScript and lodash!');
 `);
 
   vfs.writeFileSync('/src/style.css', `
@@ -93,15 +100,25 @@ export async function installRealVite(
   npm: PackageManager,
   log: (msg: string) => void,
 ): Promise<void> {
-  log('Installing vite@8...');
-  const result = await npm.install('vite@8', {
+  log('Installing vite@7...');
+  const result = await npm.install('vite@7', {
     onProgress: (msg) => {
       if (msg.startsWith('  Resolving') || msg.startsWith('  Installing') || msg.startsWith('    Downloading')) return;
       log(msg);
     },
   });
   log(`Installed ${result.added.length} packages`);
-  log('Vite 8 ready!');
+  log('Vite 7 ready!');
+
+  log('Installing lodash-es...');
+  const lodashResult = await npm.install('lodash-es', {
+    onProgress: (msg) => {
+      if (msg.startsWith('  Resolving') || msg.startsWith('  Installing') || msg.startsWith('    Downloading')) return;
+      log(msg);
+    },
+  });
+  log(`Installed ${lodashResult.added.length} packages`);
+  log('lodash-es ready!');
 }
 
 export async function startRealViteServer(
@@ -116,12 +133,31 @@ export async function startRealViteServer(
   const viteModule = runtime.runFile('/__load-vite.js').exports;
   const httpModule = runtime.runFile('/__load-http.js').exports;
 
+  // Create a Vite plugin that handles .ts/.tsx files via esbuild
+  vfs.writeFileSync('/__ts-plugin.js', `
+    const esbuild = require('esbuild');
+    module.exports = {
+      name: 'ts-transform',
+      async transform(code, id) {
+        if (id.endsWith('.ts') || id.endsWith('.tsx') || id.endsWith('.mts')) {
+          const result = await esbuild.transform(code, {
+            loader: id.endsWith('.tsx') ? 'tsx' : 'ts',
+            sourcemap: true,
+          });
+          return { code: result.code, map: result.map };
+        }
+        return null;
+      },
+    };
+  `);
+  const tsPlugin = runtime.runFile('/__ts-plugin.js').exports;
+
   const port = 3000;
   log('Creating RealViteServer...');
   const server = new RealViteServer(
     () => viteModule,
     () => httpModule,
-    { root: '/', port },
+    { root: '/', port, vfs, plugins: [tsPlugin] },
   );
 
   log('Starting Vite dev server...');

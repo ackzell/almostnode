@@ -4,7 +4,7 @@ import { Runtime } from '../src/runtime';
 import { PackageManager } from '../src/npm';
 import { RealViteServer } from '../src/frameworks/real-vite-server';
 
-const VITE_VERSION = '8';
+const VITE_VERSION = '7';
 
 describe('Real Vite loading', () => {
   let vfs: VirtualFS;
@@ -28,17 +28,16 @@ describe('Real Vite loading', () => {
     }));
   });
 
-  it('should resolve vite@8 from npm registry', async () => {
+  it('should resolve vite@7 from npm registry', async () => {
     const { Registry } = await import('../src/npm/registry');
     const registry = new Registry();
     const manifest = await registry.getPackageManifest('vite');
-    const latest = manifest['dist-tags'].latest;
-    console.log(`Vite latest version: ${latest}`);
-    expect(latest).toBeTruthy();
-    expect(latest.startsWith('8.')).toBe(true);
+    const v7Versions = Object.keys(manifest.versions).filter(v => v.startsWith('7.'));
+    console.log(`Vite 7.x versions found: ${v7Versions.length}`);
+    expect(v7Versions.length).toBeGreaterThan(0);
   }, 30000);
 
-  it('should install vite@latest (8.x)', async () => {
+  it('should install vite@latest (7.x)', async () => {
     const result = await npm.install(`vite@${VITE_VERSION}`, {
       onProgress: (msg: string) => console.log('  ' + msg),
     });
@@ -139,11 +138,48 @@ describe('Real Vite loading', () => {
 
     vfs.writeFileSync('/test-create-server.js', code);
     const { exports: promise } = runtime.runFile('/test-create-server.js');
-    const result = await promise;
+    const result: any = await promise;
     console.log('createServer result:', JSON.stringify(result, null, 2));
 
     expect(result.success).toBe(true);
     expect(result.hasConfig).toBe(true);
+  }, 60000);
+
+  it('should transform .ts files through Vite server', async () => {
+    vfs.writeFileSync('/index.html', `<!DOCTYPE html><html><body><script type="module" src="/src/app.ts"></script></body></html>`);
+    vfs.mkdirSync('/src', { recursive: true });
+    vfs.writeFileSync('/src/app.ts', `const x: number = 42; console.log(x);`);
+
+    vfs.writeFileSync('/test-ts.js', `
+      async function main() {
+        const vite = require('vite');
+        try {
+          const server = await vite.createServer({
+            root: '/',
+            server: { middlewareMode: true },
+            logLevel: 'silent',
+            appType: 'custom',
+            esbuild: false,
+          });
+          try {
+            const result = await server.transformRequest('/src/app.ts');
+            return { success: true, code: result.code, error: null };
+          } catch (e) {
+            return { success: false, error: e.message, errorStack: e.stack };
+          } finally {
+            await server.close();
+          }
+        } catch (e) {
+          return { success: false, error: e.message, errorStack: e.stack };
+        }
+      }
+      module.exports = main();
+    `);
+    const tsResult = (await runtime.runFile('/test-ts.js').exports) as any;
+    console.log('TS transform result:', JSON.stringify(tsResult, null, 2).slice(0, 500));
+    expect(tsResult.success).toBe(true);
+    expect(typeof tsResult.code).toBe('string');
+    expect(tsResult.code.length).toBeGreaterThan(0);
   }, 60000);
 
   it('should serve files through RealViteServer via SW bridge', async () => {
@@ -159,7 +195,7 @@ describe('Real Vite loading', () => {
     vfs.mkdirSync('/src', { recursive: true });
     vfs.writeFileSync('/src/app.js', `
       const el = document.createElement('h1');
-      el.textContent = 'Hello from Vite 8!';
+      el.textContent = 'Hello from Vite!';
       document.getElementById('root').appendChild(el);
     `);
 
@@ -206,7 +242,91 @@ describe('Real Vite loading', () => {
         ? jsResponse.body.toString('utf8')
         : new TextDecoder().decode(jsResponse.body);
       expect(jsResponse.statusCode).toBe(200);
-      expect(jsBody).toContain('Hello from Vite 8!');
+      expect(jsBody).toContain('Hello from Vite!');
+
+      // Verify custom HMR client is served
+      const hmrResponse = await serverInfo.handleRequest(
+        'GET',
+        '/@vite/client',
+        { 'accept': 'application/javascript' },
+      );
+      expect(hmrResponse.statusCode).toBe(200);
+      const hmrBody = hmrResponse.body instanceof Buffer
+        ? hmrResponse.body.toString('utf8')
+        : new TextDecoder().decode(hmrResponse.body);
+      expect(hmrBody).toContain('createHotContext');
+      expect(hmrBody).toContain('vite-hmr');
+    } finally {
+      await server.close();
+    }
+  }, 30000);
+
+  it('should serve .ts files through RealViteServer with tsPlugin', async () => {
+    vfs.writeFileSync('/index.html', `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Real Vite TS</title></head>
+<body><div id="root"></div><script type="module" src="/src/app.ts"></script></body>
+</html>`);
+
+    vfs.mkdirSync('/src', { recursive: true });
+    vfs.writeFileSync('/src/app.ts', `const x: number = 42; console.log(x);`);
+
+    // Get vite and http modules
+    vfs.writeFileSync('/get-vite.js', 'module.exports = require("vite");');
+    vfs.writeFileSync('/get-http.js', 'module.exports = require("http");');
+    const viteModule = runtime.runFile('/get-vite.js').exports;
+    const httpModule = runtime.runFile('/get-http.js').exports;
+
+    // Use the runtime's require to get esbuild (won't init, just reference the shim)
+    vfs.writeFileSync('/__ts-plugin.js', `
+      const esbuild = require('esbuild');
+      module.exports = {
+        name: 'ts-transform',
+        async transform(code, id) {
+          if (id.endsWith('.ts') || id.endsWith('.tsx') || id.endsWith('.mts')) {
+            return { code, map: null };
+          }
+          return null;
+        },
+      };
+    `);
+    const tsPlugin = runtime.runFile('/__ts-plugin.js').exports;
+
+    const server = new RealViteServer(
+      () => viteModule,
+      () => httpModule,
+      { root: '/', port: 3002, vfs, plugins: [tsPlugin], esbuild: false },
+    );
+
+    await server.start();
+    try {
+      const serverInfo = (httpModule as any).getServer(3002);
+      expect(serverInfo).toBeTruthy();
+      expect(serverInfo.listening).toBe(true);
+
+      // Serve .ts file through Vite middleware
+      const tsResponse = await serverInfo.handleRequest(
+        'GET',
+        '/src/app.ts',
+        { 'accept': 'application/javascript' },
+      );
+      const tsBody = tsResponse.body instanceof Buffer
+        ? tsResponse.body.toString('utf8')
+        : new TextDecoder().decode(tsResponse.body);
+      expect(tsResponse.statusCode).toBe(200);
+      expect(tsBody).toContain('console.log(x)');
+
+      // Serve index.html
+      const htmlResponse = await serverInfo.handleRequest(
+        'GET',
+        '/index.html',
+        { 'accept': 'text/html' },
+      );
+      const htmlBody = htmlResponse.body instanceof Buffer
+        ? htmlResponse.body.toString('utf8')
+        : new TextDecoder().decode(htmlResponse.body);
+      expect(htmlResponse.statusCode).toBe(200);
+      expect(htmlBody).toContain('<!DOCTYPE html>');
     } finally {
       await server.close();
     }

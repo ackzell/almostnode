@@ -197,13 +197,20 @@ export class PackageManager {
 
           // Transform ESM to CJS
           if (shouldTransform) {
-            try {
-              const count = await transformPackage(this.vfs, pkgPath, onProgress);
-              if (count > 0) {
-                onProgress?.(`  Transformed ${count} files in ${name}`);
+            // Keep ESM-only framework runtime packages as ESM so browser dev
+            // servers (real Vite) can serve them with real named exports.
+            // require() of these still works — the runtime transforms ESM→CJS
+            // at load time.
+            const isEsmOnlyRuntime = name === 'vue' || name.startsWith('@vue/');
+            if (!isEsmOnlyRuntime) {
+              try {
+                const count = await transformPackage(this.vfs, pkgPath, onProgress);
+                if (count > 0) {
+                  onProgress?.(`  Transformed ${count} files in ${name}`);
+                }
+              } catch (transformError) {
+                onProgress?.(`  Warning: Transform failed for ${name}: ${transformError}`);
               }
-            } catch (transformError) {
-              onProgress?.(`  Warning: Transform failed for ${name}: ${transformError}`);
             }
           }
 

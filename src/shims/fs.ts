@@ -75,6 +75,7 @@ export interface FsPromises {
   access(path: PathLike, mode?: number): Promise<void>;
   realpath(path: PathLike): Promise<string>;
   copyFile(src: PathLike, dest: PathLike): Promise<void>;
+  watch(path: PathLike, options?: { persistent?: boolean; recursive?: boolean; encoding?: string | null }): AsyncIterable<{ eventType: WatchEventType; filename: string | null }>;
 }
 
 export interface FsConstants {
@@ -413,6 +414,50 @@ export function createFsShim(vfs: VirtualFS, getCwd?: () => string): FsShim {
           reject(err);
         }
       });
+    },
+
+    watch(pathLike: unknown, options?: { persistent?: boolean; recursive?: boolean; encoding?: string | null }): AsyncIterable<{ eventType: WatchEventType; filename: string | null }> {
+      const path = resolvePath(pathLike);
+      const queue: Array<{ eventType: WatchEventType; filename: string | null }> = [];
+      let notify: (() => void) | null = null;
+      let closed = false;
+
+      const watcher = vfs.watch(path, options as { recursive?: boolean }, (eventType, filename) => {
+        queue.push({ eventType, filename });
+        if (notify) {
+          notify();
+          notify = null;
+        }
+      });
+
+      const waitForEvent = (): Promise<void> => new Promise((resolve) => {
+        notify = resolve;
+      });
+
+      return {
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              while (queue.length === 0 && !closed) {
+                await waitForEvent();
+              }
+              if (queue.length > 0) {
+                return { value: queue.shift()!, done: false };
+              }
+              return { value: undefined, done: true };
+            },
+            async return() {
+              closed = true;
+              try {
+                watcher.close();
+              } catch {
+                // ignore
+              }
+              return { value: undefined, done: true };
+            },
+          };
+        },
+      };
     },
   } as FsPromises;
 

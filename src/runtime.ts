@@ -314,6 +314,7 @@ const builtinModules: Record<string, unknown> = {
   net: netShim,
   events: eventsShim,
   stream: streamShim,
+  'stream/promises': (streamShim as unknown as { promises: unknown }).promises,
   buffer: bufferShim,
   url: urlShim,
   querystring: querystringShim,
@@ -455,6 +456,13 @@ function createRequire(
     // Handle node: protocol prefix (Node.js 16+)
     if (id.startsWith('node:')) {
       id = id.slice(5);
+    }
+    // Handle file:// URLs
+    if (id.startsWith('file://')) {
+      id = id.slice(7);
+      if (id.startsWith('/') && id[2] === ':') {
+        id = id.slice(1);
+      }
     }
 
     // Built-in modules
@@ -814,6 +822,13 @@ ${code}
     if (id.startsWith('node:')) {
       id = id.slice(5);
     }
+    // Handle file:// URLs (e.g. Vite loading preprocessors via import('file:///...'))
+    if (id.startsWith('file://')) {
+      id = id.slice(7);
+      if (id.startsWith('/') && id[2] === ':') {
+        id = id.slice(1); // Windows-style file:///C:/ → C:/
+      }
+    }
 
     // Built-in modules
     if (id === 'fs') {
@@ -869,7 +884,14 @@ ${code}
       console.log('[runtime] Intercepted esbuild:', id);
       return builtinModules['esbuild'];
     }
-    if (id === 'rolldown' || id.startsWith('rolldown/') || id.startsWith('@rolldown/')) {
+    // Intercept rolldown's native binding packages - always use our shim.
+    // EXCEPT @rolldown/pluginutils, which is a pure-JS utility that the
+    // ecosystem (Vite, @vitejs/plugin-vue) needs for real.
+    const isRolldownNative = (spec: string): boolean =>
+      spec === 'rolldown' ||
+      spec.startsWith('rolldown/') ||
+      (spec.startsWith('@rolldown/') && !spec.startsWith('@rolldown/pluginutils'));
+    if (isRolldownNative(id)) {
       console.log('[runtime] Intercepted rolldown:', id);
       return builtinModules['rolldown'];
     }
@@ -894,7 +916,7 @@ ${code}
       return builtinModules['esbuild'];
     }
     if (resolved.includes('/node_modules/rolldown/') ||
-        resolved.includes('/node_modules/@rolldown/')) {
+        (resolved.includes('/node_modules/@rolldown/') && !resolved.includes('/node_modules/@rolldown/pluginutils'))) {
       return builtinModules['rolldown'];
     }
     if (resolved.includes('/node_modules/prettier/')) {
