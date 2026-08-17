@@ -81,6 +81,22 @@ export function clearStreamingCallbacks(): void {
   _abortSignal = null;
 }
 
+/**
+ * Forward a chunk to the active streaming stdout callback (if any).
+ * Package-manager commands call this so their progress reaches the
+ * WebContainerProcess output stream (and the terminal panel).
+ */
+export function forwardStdout(data: string): void {
+  if (_streamStdout) _streamStdout(data);
+}
+
+/**
+ * Forward a chunk to the active streaming stderr callback (if any).
+ */
+export function forwardStderr(data: string): void {
+  if (_streamStderr) _streamStderr(data);
+}
+
 // Reference to the currently running node command's process stdin.
 // Used to send stdin input to long-running commands (e.g. vitest watch mode).
 let _activeProcessStdin: { emit: (event: string, ...args: unknown[]) => void } | null = null;
@@ -203,10 +219,10 @@ export function initChildProcess(vfs: VirtualFS): void {
     }
 
     try {
-      // Run the script (synchronous part)
-      runtime.runFile(resolvedPath);
+      // Run the script (awaiting any top-level await in the entry point)
+      await runtime.runFileAsync(resolvedPath);
     } catch (error) {
-      // process.exit() throws to stop sync execution — this is expected
+      // process.exit() throws to stop execution — this is expected
       if (error instanceof Error && error.message.startsWith('Process exited with code')) {
         return { stdout, stderr, exitCode };
       }
@@ -332,8 +348,10 @@ export function initChildProcess(vfs: VirtualFS): void {
     const subcommand = args[0];
 
     if (!subcommand || subcommand === 'help' || subcommand === '--help') {
+      const usage = `Usage: ${pm} <command>\n\nCommands:\n  run <script>   Run a script from package.json\n  start          Run the start script\n  test           Run the test script\n  install [pkg]  Install packages\n  ls             List installed packages\n`;
+      forwardStdout(usage);
       return {
-        stdout: `Usage: ${pm} <command>\n\nCommands:\n  run <script>   Run a script from package.json\n  start          Run the start script\n  test           Run the test script\n  install [pkg]  Install packages\n  ls             List installed packages\n`,
+        stdout: usage,
         stderr: '',
         exitCode: 0,
       };
@@ -356,12 +374,15 @@ export function initChildProcess(vfs: VirtualFS): void {
       case 'ls':
       case 'list':
         return handleNpmList(ctx, pm);
-      default:
+      default: {
+        const stderr = `${pm} ERR! Unknown command: "${subcommand}"\n`;
+        forwardStderr(stderr);
         return {
           stdout: '',
-          stderr: `${pm} ERR! Unknown command: "${subcommand}"\n`,
+          stderr,
           exitCode: 1,
         };
+      }
     }
   });
 
@@ -391,10 +412,12 @@ function readPackageJson(cwd: string, pm: string = 'npm'): { pkgJson: PackageJso
   const pkgJsonPath = `${cwd}/package.json`.replace(/\/+/g, '/');
 
   if (!currentVfs!.existsSync(pkgJsonPath)) {
+    const stderr = `${pm} ERR! no package.json found\n`;
+    forwardStderr(stderr);
     return {
       error: {
         stdout: '',
-        stderr: `${pm} ERR! no package.json found\n`,
+        stderr,
         exitCode: 1,
       },
     };
@@ -404,10 +427,12 @@ function readPackageJson(cwd: string, pm: string = 'npm'): { pkgJson: PackageJso
     const pkgJson = JSON.parse(currentVfs!.readFileSync(pkgJsonPath, 'utf8')) as PackageJson;
     return { pkgJson };
   } catch {
+    const stderr = `${pm} ERR! Failed to parse package.json\n`;
+    forwardStderr(stderr);
     return {
       error: {
         stdout: '',
-        stderr: `${pm} ERR! Failed to parse package.json\n`,
+        stderr,
         exitCode: 1,
       },
     };
@@ -442,13 +467,16 @@ async function handleNpmRun(args: string[], ctx: CommandContext, pm: string = 'n
         msg += `${pm} ERR!     ${scripts[name]}\n`;
       }
     }
+    forwardStderr(msg);
     return { stdout: '', stderr: msg, exitCode: 1 };
   }
 
   if (!ctx.exec) {
+    const stderr = `${pm} ERR! Script execution not available in this context\n`;
+    forwardStderr(stderr);
     return {
       stdout: '',
-      stderr: `${pm} ERR! Script execution not available in this context\n`,
+      stderr,
       exitCode: 1,
     };
   }
@@ -465,23 +493,36 @@ async function handleNpmRun(args: string[], ctx: CommandContext, pm: string = 'n
   let allStderr = '';
   const label = `${pkgJson.name || ''}@${pkgJson.version || ''}`;
 
+  // Append to the buffered result AND forward to the streaming output so the
+  // terminal panel shows the full `npm run` transcript as it happens.
+  const streamOut = (msg: string) => {
+    allStdout += msg;
+    forwardStdout(msg);
+  };
+  const streamErr = (msg: string) => {
+    allStderr += msg;
+    forwardStderr(msg);
+  };
+
   // Run pre<script> if it exists
   const preScript = scripts[`pre${scriptName}`];
   if (preScript) {
-    allStderr += `\n> ${label} pre${scriptName}\n> ${preScript}\n\n`;
+    const banner = `\n> ${label} pre${scriptName}\n> ${preScript}\n\n`;
+    streamErr(banner);
     const preResult = await ctx.exec(preScript, { cwd: ctx.cwd, env: npmEnv });
-    allStdout += preResult.stdout;
-    allStderr += preResult.stderr;
+    if (preResult.stdout) streamOut(preResult.stdout);
+    if (preResult.stderr) streamErr(preResult.stderr);
     if (preResult.exitCode !== 0) {
       return { stdout: allStdout, stderr: allStderr, exitCode: preResult.exitCode };
     }
   }
 
   // Run the main script
-  allStderr += `\n> ${label} ${scriptName}\n> ${scriptCommand}\n\n`;
+  const mainBanner = `\n> ${label} ${scriptName}\n> ${scriptCommand}\n\n`;
+  streamErr(mainBanner);
   const mainResult = await ctx.exec(scriptCommand, { cwd: ctx.cwd, env: npmEnv });
-  allStdout += mainResult.stdout;
-  allStderr += mainResult.stderr;
+  if (mainResult.stdout) streamOut(mainResult.stdout);
+  if (mainResult.stderr) streamErr(mainResult.stderr);
 
   if (mainResult.exitCode !== 0) {
     return { stdout: allStdout, stderr: allStderr, exitCode: mainResult.exitCode };
@@ -490,10 +531,11 @@ async function handleNpmRun(args: string[], ctx: CommandContext, pm: string = 'n
   // Run post<script> if it exists
   const postScript = scripts[`post${scriptName}`];
   if (postScript) {
-    allStderr += `\n> ${label} post${scriptName}\n> ${postScript}\n\n`;
+    const banner = `\n> ${label} post${scriptName}\n> ${postScript}\n\n`;
+    streamErr(banner);
     const postResult = await ctx.exec(postScript, { cwd: ctx.cwd, env: npmEnv });
-    allStdout += postResult.stdout;
-    allStderr += postResult.stderr;
+    if (postResult.stdout) streamOut(postResult.stdout);
+    if (postResult.stderr) streamErr(postResult.stderr);
     if (postResult.exitCode !== 0) {
       return { stdout: allStdout, stderr: allStderr, exitCode: postResult.exitCode };
     }
@@ -532,6 +574,7 @@ function listScripts(ctx: CommandContext, pm: string = 'npm'): JustBashExecResul
     }
   }
 
+  forwardStdout(output);
   return { stdout: output, stderr: '', exitCode: 0 };
 }
 
@@ -544,6 +587,13 @@ async function handleNpmInstall(args: string[], ctx: CommandContext, pm: string 
 
   let stdout = '';
 
+  // Append to the buffered result AND forward to the streaming output so the
+  // terminal panel sees install progress as it happens.
+  const streamOut = (msg: string) => {
+    stdout += msg;
+    forwardStdout(msg);
+  };
+
   try {
     const pkgArgs = args.filter(a => !a.startsWith('-'));
     if (pkgArgs.length === 0) {
@@ -551,23 +601,25 @@ async function handleNpmInstall(args: string[], ctx: CommandContext, pm: string 
       // include devDependencies, matching real npm/pnpm behavior
       const installResult = await pmInstance.installFromPackageJson({
         includeDev: true,
-        onProgress: (msg: string) => { stdout += msg + '\n'; },
+        onProgress: (msg: string) => { streamOut(msg + '\n'); },
       });
-      stdout += `added ${installResult.added.length} packages\n`;
+      streamOut(`added ${installResult.added.length} packages\n`);
     } else {
       // npm install <pkg> [<pkg> ...]
       for (const arg of pkgArgs) {
         const installResult = await pmInstance.install(arg, {
           save: true,
-          onProgress: (msg: string) => { stdout += msg + '\n'; },
+          onProgress: (msg: string) => { streamOut(msg + '\n'); },
         });
-        stdout += `added ${installResult.added.length} packages\n`;
+        streamOut(`added ${installResult.added.length} packages\n`);
       }
     }
     return { stdout, stderr: '', exitCode: 0 };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    return { stdout, stderr: `${pm} ERR! ${msg}\n`, exitCode: 1 };
+    const errMsg = `${pm} ERR! ${msg}\n`;
+    forwardStderr(errMsg);
+    return { stdout, stderr: errMsg, exitCode: 1 };
   }
 }
 
@@ -588,6 +640,7 @@ async function handleNpmList(ctx: CommandContext, _pm: string = 'npm'): Promise<
   for (const [name, version] of entries) {
     output += `+-- ${name}@${version}\n`;
   }
+  forwardStdout(output);
   return { stdout: output, stderr: '', exitCode: 0 };
 }
 
@@ -845,10 +898,10 @@ export function spawnProcess(
   const exit = new Promise<number>((resolve) => {
     setStreamingCallbacks({
       onStdout: (data) => {
-        try { outputController?.enqueue(data); } catch { /* stream closed */ }
+        try { outputController?.enqueue(data.replace(/\n/g, '\r\n')); } catch { /* stream closed */ }
       },
       onStderr: (data) => {
-        try { outputController?.enqueue(data); } catch { /* stream closed */ }
+        try { outputController?.enqueue(data.replace(/\n/g, '\r\n')); } catch { /* stream closed */ }
       },
       signal: controller.signal,
     });
@@ -1136,4 +1189,6 @@ export default {
   initChildProcess,
   setStreamingCallbacks,
   clearStreamingCallbacks,
+  forwardStdout,
+  forwardStderr,
 };

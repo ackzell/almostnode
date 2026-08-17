@@ -9,6 +9,7 @@ import { VirtualFS } from './virtual-fs';
 import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interface';
 import type { PackageJson } from './types/package-json';
 import { simpleHash } from './utils/hash';
+import { assertViteSupportedByPath } from './vite-version';
 import { uint8ToBase64, uint8ToHex } from './utils/binary-encoding';
 import { createFsShim, FsShim } from './shims/fs';
 import * as pathShim from './shims/path';
@@ -39,7 +40,6 @@ import * as perfHooksShim from './shims/perf_hooks';
 import * as workerThreadsShim from './shims/worker_threads';
 import * as esbuildShim from './shims/esbuild';
 import * as rollupShim from './shims/rollup';
-import * as rolldownShim from './shims/rolldown';
 import * as v8Shim from './shims/v8';
 import * as readlineShim from './shims/readline';
 import * as tlsShim from './shims/tls';
@@ -184,6 +184,55 @@ function transformEsmToCjsRegexFallback(code: string, filename: string): string 
   }
 
   return transformed;
+}
+
+/**
+ * Detect top-level await in code (an `await` outside any function body).
+ *
+ * The acorn ESM→CJS transform leaves top-level `await` untouched, which is a
+ * syntax error inside the runtime's plain (non-async) function wrapper. We
+ * detect it here so the wrapper can be switched to an async function instead.
+ */
+function hasTopLevelAwait(code: string): boolean {
+  try {
+    const ast = acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'module' }) as any;
+    let found = false;
+
+    const scan = (node: any): void => {
+      if (!node || typeof node !== 'object' || found) return;
+      if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await === true)) {
+        found = true;
+        return;
+      }
+      // `await` inside a function/class body is legal, not top-level await
+      if (
+        node.type === 'FunctionDeclaration' ||
+        node.type === 'FunctionExpression' ||
+        node.type === 'ArrowFunctionExpression' ||
+        node.type === 'ClassDeclaration' ||
+        node.type === 'ClassExpression' ||
+        node.type === 'MethodDefinition'
+      ) {
+        return;
+      }
+      for (const key of Object.keys(node)) {
+        if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
+        const child = node[key];
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            if (item && typeof item === 'object' && typeof item.type === 'string') scan(item);
+          }
+        } else if (child && typeof child === 'object' && typeof child.type === 'string') {
+          scan(child);
+        }
+      }
+    };
+
+    for (const stmt of ast.body) scan(stmt);
+    return found;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -341,7 +390,6 @@ const builtinModules: Record<string, unknown> = {
   worker_threads: workerThreadsShim,
   esbuild: esbuildShim,
   rollup: rollupShim,
-  rolldown: rolldownShim,
   v8: v8Shim,
   readline: readlineShim,
   tls: tlsShim,
@@ -740,6 +788,15 @@ function createRequire(
       processedCodeCache?.set(codeCacheKey, code);
     }
 
+    // Top-level await can't be satisfied synchronously via require(). Throw a
+    // clear error (matching Node's ERR_REQUIRE_ASYNC_MODULE) instead of a
+    // confusing SyntaxError from the plain-function wrapper.
+    if (hasTopLevelAwait(code)) {
+      throw new Error(
+        `Cannot require() a module with top-level await (${resolvedPath}). Use dynamic import() instead.`
+      );
+    }
+
     // Create require for this module
     const moduleRequire = createRequire(
       vfs,
@@ -874,7 +931,7 @@ ${code}
       return builtinModules[id];
     }
 
-    // Intercept rollup, esbuild, and rolldown - always use our shims
+    // Intercept rollup, esbuild, and prettier - always use our shims
     // These packages have native binaries that don't work in browser
     if (id === 'rollup' || id.startsWith('rollup/') || id.startsWith('@rollup/')) {
       console.log('[runtime] Intercepted rollup:', id);
@@ -884,29 +941,24 @@ ${code}
       console.log('[runtime] Intercepted esbuild:', id);
       return builtinModules['esbuild'];
     }
-    // Intercept rolldown's native binding packages - always use our shim.
-    // EXCEPT @rolldown/pluginutils, which is a pure-JS utility that the
-    // ecosystem (Vite, @vitejs/plugin-vue) needs for real.
-    const isRolldownNative = (spec: string): boolean =>
-      spec === 'rolldown' ||
-      spec.startsWith('rolldown/') ||
-      (spec.startsWith('@rolldown/') && !spec.startsWith('@rolldown/pluginutils'));
-    if (isRolldownNative(id)) {
-      console.log('[runtime] Intercepted rolldown:', id);
-      return builtinModules['rolldown'];
-    }
     // Intercept prettier - uses createRequire which doesn't work in our runtime
     if (id === 'prettier' || id.startsWith('prettier/')) {
       return builtinModules['prettier'];
     }
     const resolved = resolveModule(id, currentDir);
 
+    // Fail fast on unsupported vite@8+ instead of letting vite throw cryptic
+    // bootstrap errors (e.g. "createRequire is not a function") later.
+    if (resolved.includes('/node_modules/vite/')) {
+      assertViteSupportedByPath(vfs, resolved);
+    }
+
     // If resolved to a built-in name (shouldn't happen but safety check)
     if (builtinModules[resolved]) {
       return builtinModules[resolved];
     }
 
-    // Also check if resolved path is to rollup, esbuild, rolldown, or prettier in node_modules
+    // Also check if resolved path is to rollup, esbuild, or prettier in node_modules
     if (resolved.includes('/node_modules/rollup/') ||
         resolved.includes('/node_modules/@rollup/')) {
       return builtinModules['rollup'];
@@ -914,10 +966,6 @@ ${code}
     if (resolved.includes('/node_modules/esbuild/') ||
         resolved.includes('/node_modules/@esbuild/')) {
       return builtinModules['esbuild'];
-    }
-    if (resolved.includes('/node_modules/rolldown/') ||
-        (resolved.includes('/node_modules/@rolldown/') && !resolved.includes('/node_modules/@rolldown/pluginutils'))) {
-      return builtinModules['rolldown'];
     }
     if (resolved.includes('/node_modules/prettier/')) {
       return builtinModules['prettier'];
@@ -1270,12 +1318,14 @@ export class Runtime {
   }
 
   /**
-   * Execute code as a module (synchronous - backward compatible)
+   * Core module execution shared by execute() and executeAsync().
+   * Returns the synchronous exports/module plus a `promise` that must be
+   * awaited when the code contains top-level await (otherwise it is null).
    */
-  execute(
+  private _runModule(
     code: string,
-    filename: string = '/index.js'
-  ): { exports: unknown; module: Module } {
+    filename: string
+  ): { exports: unknown; module: Module; promise: Promise<unknown> | null } {
     const dirname = pathShim.dirname(filename);
 
     // Write code to virtual file system
@@ -1319,10 +1369,17 @@ export class Runtime {
       code = transformEsmToCjs(code, filename);
     }
 
+    // Top-level await is invalid inside a plain function. When present, wrap
+    // the module body in an async function so `await` is legal; the returned
+    // Promise is awaited by executeAsync().
+    const hasTLA = hasTopLevelAwait(code);
+    let promise: Promise<unknown> | null = null;
+
     // Execute code
     // Use the same wrapper pattern as loadModule for consistency
     try {
       const importMetaUrl = 'file://' + filename;
+      const inner = hasTLA ? 'async function' : 'function';
       const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport) {
 var exports = $exports;
 var require = $require;
@@ -1338,7 +1395,7 @@ var global = globalThis;
 globalThis.process = $process;
 global.process = $process;
 
-return (function() {
+return (${inner}() {
 ${code}
 }).call(this);
 })`;
@@ -1347,7 +1404,7 @@ ${code}
       const dynamicImport = createDynamicImport(require);
 
       const fn = eval(wrappedCode);
-      fn(
+      const execResult = fn(
         module.exports,
         require,
         module,
@@ -1359,13 +1416,37 @@ ${code}
         dynamicImport
       );
 
+      if (hasTLA && execResult && typeof (execResult as Promise<unknown>).then === 'function') {
+        promise = execResult as Promise<unknown>;
+      }
+
       module.loaded = true;
     } catch (error) {
       delete this.moduleCache[filename];
       throw error;
     }
 
-    return { exports: module.exports, module };
+    return { exports: module.exports, module, promise };
+  }
+
+  /**
+   * Execute code as a module (synchronous - backward compatible)
+   */
+  execute(
+    code: string,
+    filename: string = '/index.js'
+  ): { exports: unknown; module: Module } {
+    const { exports, module, promise } = this._runModule(code, filename);
+
+    // The synchronous API cannot await top-level await; surface any async
+    // failure to the host console instead of leaking an unhandled rejection.
+    if (promise) {
+      promise.catch((error) => {
+        console.error('[runtime] Error in async module execution:', error);
+      });
+    }
+
+    return { exports, module };
   }
 
   /**
@@ -1381,7 +1462,16 @@ ${code}
     code: string,
     filename: string = '/index.js'
   ): Promise<IExecuteResult> {
-    return Promise.resolve(this.execute(code, filename));
+    const { module, promise } = this._runModule(code, filename);
+    if (promise) {
+      try {
+        await promise;
+      } catch (error) {
+        delete this.moduleCache[filename];
+        throw error;
+      }
+    }
+    return { exports: module.exports, module };
   }
 
   /**
@@ -1401,7 +1491,8 @@ ${code}
    * Run a file from the virtual file system (async - for IRuntime interface)
    */
   async runFileAsync(filename: string): Promise<IExecuteResult> {
-    return Promise.resolve(this.runFile(filename));
+    const code = this.vfs.readFileSync(filename, 'utf8');
+    return this.executeAsync(code, filename);
   }
 
   /**

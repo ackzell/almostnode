@@ -157,10 +157,10 @@ vfs<span class="op">.</span><span class="fn">writeFileSync</span><span class="op
     </div>
 
     <h2>Real Vite (Experimental)</h2>
-    <p>The <code>ViteDevServer</code> above is almostnode's custom, lightweight Vite-like server. almostnode can also run the <strong>real Vite package from npm</strong> inside the browser via <code>vite.createServer()</code>, wrapped in <code>RealViteServer</code> and served through the Service Worker bridge. See the <a href="https://github.com/macaly/almostnode#real-vite-experimental">README</a> for a working example, and <code>examples/real-vite-demo.html</code> for a live demo.</p>
+    <p>The <code>ViteDevServer</code> above is almostnode's custom, lightweight Vite-like server. almostnode can also run the <strong>real Vite package from npm</strong> inside the browser via <code>vite.createServer()</code>, wrapped in <code>RealViteServer</code> and served through the Service Worker bridge. See the <a href="https://github.com/macaly/almostnode#real-vite-experimental">README</a> for a working example, and <code>examples/vue-real-vite-demo.html</code> for a live demo.</p>
     <div class="callout">
       <div class="callout-title">Experimental</div>
-      <p>Real Vite support is in progress. Loading <code>vite</code>, <code>createServer({ middlewareMode: true })</code>, serving HTML/JS/TS through Vite's middleware, and <strong>Vue SFCs via <code>@vitejs/plugin-vue</code> (including sass)</strong> currently work — see <code>examples/vue-real-vite-demo.html</code>. rolldown/lightningcss native stubs are incomplete and the tests are verified against Vite 7. The custom <code>ViteDevServer</code> remains the stable fallback.</p>
+      <p>Real Vite support is in progress. Loading <code>vite</code>, <code>createServer({ middlewareMode: true })</code>, serving HTML/JS/TS through Vite's middleware, and <strong>Vue SFCs via <code>@vitejs/plugin-vue</code> (including sass)</strong> currently work — see <code>examples/vue-real-vite-demo.html</code>. Only Vite 7 is supported; <strong>vite@8+ fails fast with a clear error</strong> (pin <code>vite@^7.0.0</code>). The custom <code>ViteDevServer</code> remains the stable fallback.</p>
     </div>
 
     <div class="page-nav">

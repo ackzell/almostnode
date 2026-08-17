@@ -848,7 +848,7 @@ const vfs = new VirtualFS();
 const runtime = new Runtime(vfs, { cwd: '/' });
 const npm = new PackageManager(vfs, { cwd: '/' });
 
-await npm.install('vite');  // Real Vite from the npm registry
+await npm.install('vite@7');  // Real Vite from the npm registry (vite@8+ is unsupported)
 
 // Load vite + http through the runtime (they get shimmed along the way)
 vfs.writeFileSync('/load-vite.js', 'module.exports = require("vite");');
@@ -870,7 +870,7 @@ bridge.registerServer(server.getHttpServer(), 3000);
 // Access at: /__virtual__/3000/
 ```
 
-**Status:** experimental and in progress. `require('vite')`, `createServer({ middlewareMode: true })`, serving HTML/JS/TS through Vite's middleware, a custom `@vite/client` HMR stub, and **Vue SFCs via `@vitejs/plugin-vue`** (including sass preprocessing) currently work — exercised by `tests/vue-real-vite.test.ts` and the [Vue demo](/examples/vue-real-vite-demo.html). The tests/demo are verified against Vite 7; Vite 8 requires more pure-JS stubs for rolldown's native Rust APIs (and lightningcss). The custom `ViteDevServer` remains the production fallback. See `src/frameworks/real-vite-server.ts`.
+**Status:** experimental and in progress. `require('vite')`, `createServer({ middlewareMode: true })`, serving HTML/JS/TS through Vite's middleware, a custom `@vite/client` HMR stub, and **Vue SFCs via `@vitejs/plugin-vue`** (including sass preprocessing) currently work — exercised by `tests/vue-real-vite.test.ts` and the [Vue demo](/examples/vue-real-vite-demo.html). Only Vite 7 is supported; **vite@8+ fails fast with a clear error** (pin `vite@^7.0.0`). The custom `ViteDevServer` remains the production fallback. See `src/frameworks/real-vite-server.ts`.
 
 ## Replacing WebContainers (`@webcontainer/api`)
 
@@ -1017,7 +1017,6 @@ Start the dev server with `npm run dev` and open any demo at `http://localhost:5
 |------|------|-------------|
 | **Next.js** | `/examples/next-demo.html` | Pages & App Router, CSS modules, route groups, API routes, HMR |
 | **Vite** | `/examples/vite-demo.html` | Vite dev server with React and HMR |
-| **Real Vite** | `/examples/real-vite-demo.html` | **Experimental** — real `vite.createServer()` from npm running in the browser (Vite 7/8, see [Real Vite](#real-vite-experimental)) |
 | **Vue + Real Vite** | `/examples/vue-real-vite-demo.html` | **Experimental** — real Vite 7 serving `.vue` via `@vitejs/plugin-vue` with sass + HMR |
 | **Vitest** | `/examples/vitest-demo.html` | Real vitest execution with xterm.js terminal and watch mode |
 | **Express** | `/examples/express-demo.html` | Express.js HTTP server running in the browser |

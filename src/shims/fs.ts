@@ -50,9 +50,18 @@ export interface FsShim {
   stat(path: string, callback: (err: Error | null, stats?: Stats) => void): void;
   lstat(path: string, callback: (err: Error | null, stats?: Stats) => void): void;
   readdir(path: string, callback: (err: Error | null, files?: string[]) => void): void;
+  readdir(path: string, options: { withFileTypes: true }, callback: (err: Error | null, files?: Dirent[]) => void): void;
   realpath(path: string, callback: (err: Error | null, resolvedPath?: string) => void): void;
   access(path: string, callback: (err: Error | null) => void): void;
   access(path: string, mode: number, callback: (err: Error | null) => void): void;
+  writeFile(path: PathLike, data: string | Uint8Array, callback: (err: Error | null) => void): void;
+  mkdir(path: PathLike, options: { recursive?: boolean }, callback: (err: Error | null) => void): void;
+  mkdir(path: PathLike, callback: (err: Error | null) => void): void;
+  unlink(path: PathLike, callback: (err: Error | null) => void): void;
+  rmdir(path: PathLike, callback: (err: Error | null) => void): void;
+  rm(path: PathLike, options: { recursive?: boolean; force?: boolean }, callback: (err: Error | null) => void): void;
+  rename(oldPath: PathLike, newPath: PathLike, callback: (err: Error | null) => void): void;
+  copyFile(src: PathLike, dest: PathLike, callback: (err: Error | null) => void): void;
   createReadStream(path: string): unknown;
   createWriteStream(path: string): unknown;
   promises: FsPromises;
@@ -867,6 +876,94 @@ export function createFsShim(vfs: VirtualFS, getCwd?: () => string): FsShim {
       callback?: (err: Error | null) => void
     ): void {
       vfs.access(resolvePath(pathLike), modeOrCallback, callback);
+    },
+
+    writeFile(
+      pathLike: unknown,
+      data: string | Uint8Array,
+      callback?: (err: Error | null) => void
+    ): void {
+      const path = resolvePath(pathLike);
+      try {
+        vfs.writeFileSync(path, data);
+        setTimeout(() => callback?.(null), 0);
+      } catch (err) {
+        setTimeout(() => callback?.(err as Error), 0);
+      }
+    },
+
+    mkdir(
+      pathLike: unknown,
+      optionsOrCallback?: { recursive?: boolean } | ((err: Error | null) => void),
+      callback?: (err: Error | null) => void
+    ): void {
+      const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+      const opts = typeof optionsOrCallback === 'object' ? optionsOrCallback : undefined;
+      const path = resolvePath(pathLike);
+      try {
+        vfs.mkdirSync(path, opts);
+        setTimeout(() => cb?.(null), 0);
+      } catch (err) {
+        setTimeout(() => cb?.(err as Error), 0);
+      }
+    },
+
+    unlink(pathLike: unknown, callback?: (err: Error | null) => void): void {
+      const path = resolvePath(pathLike);
+      try {
+        vfs.unlinkSync(path);
+        setTimeout(() => callback?.(null), 0);
+      } catch (err) {
+        setTimeout(() => callback?.(err as Error), 0);
+      }
+    },
+
+    rmdir(pathLike: unknown, callback?: (err: Error | null) => void): void {
+      const path = resolvePath(pathLike);
+      try {
+        vfs.rmdirSync(path);
+        setTimeout(() => callback?.(null), 0);
+      } catch (err) {
+        setTimeout(() => callback?.(err as Error), 0);
+      }
+    },
+
+    rm(
+      pathLike: unknown,
+      optionsOrCallback?: { recursive?: boolean; force?: boolean } | ((err: Error | null) => void),
+      callback?: (err: Error | null) => void
+    ): void {
+      const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+      const opts = typeof optionsOrCallback === 'object' ? optionsOrCallback : undefined;
+      const path = resolvePath(pathLike);
+      try {
+        (this as FsShim).rmSync(path, opts);
+        setTimeout(() => cb?.(null), 0);
+      } catch (err) {
+        setTimeout(() => cb?.(err as Error), 0);
+      }
+    },
+
+    rename(oldPathLike: unknown, newPathLike: unknown, callback?: (err: Error | null) => void): void {
+      const oldPath = resolvePath(oldPathLike);
+      const newPath = resolvePath(newPathLike);
+      try {
+        vfs.renameSync(oldPath, newPath);
+        setTimeout(() => callback?.(null), 0);
+      } catch (err) {
+        setTimeout(() => callback?.(err as Error), 0);
+      }
+    },
+
+    copyFile(srcLike: unknown, destLike: unknown, callback?: (err: Error | null) => void): void {
+      const src = resolvePath(srcLike);
+      const dest = resolvePath(destLike);
+      try {
+        vfs.copyFileSync(src, dest);
+        setTimeout(() => callback?.(null), 0);
+      } catch (err) {
+        setTimeout(() => callback?.(err as Error), 0);
+      }
     },
 
     createReadStream(pathLike: unknown): unknown {

@@ -234,8 +234,8 @@ export function createProcess(options?: {
     },
 
     platform: 'linux', // Pretend to be linux for better compatibility
-    version: 'v20.0.0',
-    versions: { node: '20.0.0', v8: '11.3.244.8', uv: '1.44.2' },
+    version: 'v24.0.0',
+    versions: { node: '24.0.0', v8: '13.6.354.15', uv: '1.51.0' },
 
     argv: ['node', '/index.js'],
     argv0: 'node',

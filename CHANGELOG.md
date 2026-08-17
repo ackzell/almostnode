@@ -8,17 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.15] - 2026-06-10
 
 ### Added
-- **Real Vite 8 support**: `require('vite')` succeeds (Vite 8.0.16), `vite.createServer({ middlewareMode: true })` creates a working dev server
+- **Real Vite 7 support**: `require('vite')` succeeds (Vite 7.x), `vite.createServer({ middlewareMode: true })` creates a working dev server
 - **`RealViteServer` class** (`src/frameworks/real-vite-server.ts`): Wraps real Vite `createServer()` + http shim into a SW-registered server
-- **Rolldown pure-JS shim** (`src/shims/rolldown.ts`): Intercepts 60+ native Rust exports needed by Vite 8 (acorn parse, stubs for transform/minify/dev)
-- **Real Vite 8 demo page** (`examples/real-vite-demo.html` + `src/real-vite-demo.ts`): Installs vite@8 from npm, creates server, previews vanilla JS app served through Vite's real middleware
+- **Top-level await support**: `runFileAsync`/`executeAsync` await top-level await (the vite bin pattern); `require()` of a TLA module throws a clear error instead of a syntax error
 - **`crypto.hash()`**: Node 21+ API added to crypto shim
 - **`fs.promises.rm()`**: Added to fs shim
 - **`req.connection` getter**: Added to http shim IncomingMessage
+- **fs callback-style methods**: `writeFile`/`mkdir`/`unlink`/`rmdir`/`rm`/`rename`/`copyFile` callbacks added alongside their sync forms
+
+### Changed
+- **vite@8 is blocked**: `require('vite')` and package installs of vite@8+ now fail fast with a clear error pointing at vite@^7.0.0. Prevents cryptic bootstrap errors.
+- **Two-phase dependency resolution**: direct/top-level dependencies pin their version before peer/transitive ranges (e.g. `vite: ^7.0.0` wins over `@vitejs/plugin-vue`'s `^5 || ^6 || ^7 || ^8` peer)
+- **Streaming package-manager output**: `npm`/`pnpm` `run`/`install`/`ls` progress now streams to the terminal panel with CRLF line endings
+- **`process.version`**: bumped to v24 to match modern tooling expectations
+
+### Removed
+- **Rolldown pure-JS shim** (`src/shims/rolldown.ts`): vite@8-only native Rust stub, no longer needed.
+- **Real Vite 8 demo page** (`examples/real-vite-demo.html` + `src/real-vite-demo.ts`).
 
 ### Fixed
+- **`createRequire is not a function`**: the esbuild shim now externalizes node builtins when bundling for a Node target (`platform: 'node'`) instead of stubbing them to `{}`, so vite's config-file bundling keeps `require("node:module").createRequire` working
 - **Resolver semver `=` prefix**: Handles `=0.133.0` ranges from `@oxc-project/types`
-- **Rolldown `oxcRuntimePlugin`**: Must be a callable function, not BuiltinPlugin instance
 - **`RealViteServer` factory pattern**: Uses `getVite()`/`getHttp()` factory functions instead of `runtime.require()` to avoid exposing internal API
 
 ## [0.2.14] - 2026-02-14

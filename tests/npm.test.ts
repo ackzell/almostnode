@@ -5,6 +5,7 @@ import {
   compareVersions,
   satisfies,
   findBestVersion,
+  resolveFromPackageJson,
 } from '../src/npm/resolver';
 import { extractTarball, decompress } from '../src/npm/tarball';
 import { parsePackageSpec, PackageManager } from '../src/npm';
@@ -144,6 +145,63 @@ describe('npm', () => {
       it('should return null if no match', () => {
         expect(findBestVersion(versions, '^3.0.0')).toBeNull();
       });
+    });
+  });
+
+  describe('resolveFromPackageJson', () => {
+    it('should prefer the direct dependency version over a transitive/peer range', async () => {
+      // Regression test: the vue template pins `vite: ^7.0.0`, but
+      // `@vitejs/plugin-vue` peers on `vite: ^5 || ^6 || ^7 || ^8`. Without
+      // two-phase resolution, plugin-vue's peer range would pin vite to 8.x
+      // and the flat node_modules fallback would keep it, silently ignoring
+      // the template's explicit ^7.0.0.
+      const resolved = await resolveFromPackageJson(
+        {
+          dependencies: {
+            'plugin-vue': '^6.0.0',
+          },
+          devDependencies: {
+            vite: '^7.0.0',
+          },
+        },
+        {
+          includeDev: true,
+          registry: {
+            getPackageManifest: async (name: string) => {
+              if (name === 'plugin-vue') {
+                return {
+                  'dist-tags': { latest: '6.0.8' },
+                  versions: {
+                    '6.0.8': {
+                      version: '6.0.8',
+                      peerDependencies: {
+                        vite: '^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0',
+                      },
+                      dist: { tarball: 'x', shasum: 'x' },
+                    },
+                  },
+                };
+              }
+              if (name === 'vite') {
+                return {
+                  'dist-tags': { latest: '8.2.1' },
+                  versions: Object.fromEntries(
+                    ['7.0.0', '7.3.6', '8.0.0', '8.2.1'].map((v) => [
+                      v,
+                      { version: v, dist: { tarball: 'x', shasum: 'x' } },
+                    ]),
+                  ),
+                };
+              }
+              throw new Error(`Unexpected package: ${name}`);
+            },
+          } as never,
+        },
+      );
+
+      // The direct `vite: ^7.0.0` must win over plugin-vue's `^5||^6||^7||^8`.
+      expect(resolved.get('vite')?.version).toBe('7.3.6');
+      expect(resolved.get('plugin-vue')?.version).toBe('6.0.8');
     });
   });
 

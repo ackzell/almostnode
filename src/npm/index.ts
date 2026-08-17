@@ -14,6 +14,7 @@ import {
 import { downloadAndExtract, extractTarball } from './tarball';
 import * as path from '../shims/path';
 import { initTransformer, transformPackage, isTransformerReady } from '../transform';
+import { assertViteSupported } from '../vite-version';
 
 /**
  * Normalize a package.json bin field into a consistent Record<string, string>.
@@ -146,6 +147,13 @@ export class PackageManager {
     // Ensure node_modules exists
     const nodeModulesPath = path.join(this.cwd, 'node_modules');
     this.vfs.mkdirSync(nodeModulesPath, { recursive: true });
+
+    // Fail fast on unsupported vite@8+ before downloading anything.
+    for (const [name, pkg] of resolved) {
+      if (name === 'vite') {
+        assertViteSupported(pkg.version);
+      }
+    }
 
     // Filter packages that need to be installed
     const toInstall: Array<{ name: string; pkg: ResolvedPackage; pkgPath: string }> = [];

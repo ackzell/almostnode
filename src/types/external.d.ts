@@ -43,3 +43,6 @@ interface Window {
   __esbuild?: typeof import('esbuild-wasm');
   __esbuildInitPromise?: Promise<void>;
 }
+
+// Injected at build time by vite.lib.config.js
+declare const __ALMOSTNODE_VERSION__: string;

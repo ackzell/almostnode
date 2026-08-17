@@ -24,11 +24,13 @@ almostnode is a **real competitor to WebContainers (StackBlitz)**. It runs Node.
 Goal: run **real Vite** inside the browser via `vite.createServer()`, replacing the custom `ViteDevServer`.
 
 Status (Jan 2026 as of last verification):
-- `require('vite')` succeeds (Vite 7/8 from npm); `vite.createServer({ middlewareMode: true })` returns a working server.
+- `require('vite')` succeeds (Vite 7 from npm); `vite.createServer({ middlewareMode: true })` returns a working server. vite@8+ fails fast with a clear error.
 - `RealViteServer` (`src/frameworks/real-vite-server.ts`) serves HTML/JS/TS through real Vite middleware via the SW bridge; custom `@vite/client` HMR stub (`HMR_CLIENT_CODE`).
-- Exercised by `tests/vite-load.test.ts` (load, createServer, TS transform, serve via bridge, HMR client) and `examples/real-vite-demo.html` + `src/real-vite-demo.ts` (`npm run dev` → `/examples/real-vite-demo.html`).
+- Exercised by `tests/vite-load.test.ts` (load, createServer, TS transform, serve via bridge, HMR client) and `examples/vue-real-vite-demo.html` + `src/vue-real-vite-demo.ts` (`npm run dev` → `/examples/vue-real-vite-demo.html`).
 
-Heads-up: committed HEAD pins `vite@8`; the working tree currently downgrades the test + demo to `vite@7` for diagnostics. Reconcile before merging (Vite 8 needs more rolldown/lightningcss stubs).
+vite@8 is unsupported: `require('vite')` and installs of vite@8+ fail fast with a clear error (`src/vite-version.ts`). Pin `vite@^7.0.0`.
+
+Config loading (`createRequire is not a function`) was fixed by externalizing node builtins for Node-target bundles in the esbuild shim (`src/shims/esbuild.ts`): Vite's `bundleConfigFile` runs with `platform: 'node'`, so the runtime's `require("node:module")` now provides `createRequire`. The remaining blocker is real Rollup's native binding (`native Rollup build … architecture undefined … use "@rollup/wasm-node"`) failing during `resolveConfig` — the `rollup` shim isn't catching that path yet.
 
 ## Release Process
 

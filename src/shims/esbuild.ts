@@ -597,7 +597,7 @@ function findVFSFile(vfs: VirtualFS, originalPath: string, extensions: string[])
  * 2. Relative paths (./file.ts, ../file.ts)
  * 3. Bare imports (convex/server, react)
  */
-function createVFSPlugin(externals?: string[]): unknown {
+function createVFSPlugin(externals?: string[], platform?: string): unknown {
   if (!globalVFS) {
     return null;
   }
@@ -706,8 +706,18 @@ function createVFSPlugin(externals?: string[]): unknown {
         // patchExternalRequires() converts them to bare ESM imports that the
         // browser can't resolve. An empty stub is safe because these builtins
         // are typically only used in server-only code paths (e.g., @vercel/oidc).
+        //
+        // Exception: when bundling for a Node target (platform: 'node', e.g.
+        // Vite's config-file bundling), externalize them instead. The runtime's
+        // own require() resolves node builtins (module/createRequire, fs, path,
+        // ...) correctly at load time, matching how real esbuild-on-node leaves
+        // builtins external. Stubbing them here would strip APIs like
+        // createRequire, which is what caused "createRequire is not a function".
         const bareModule = importPath.replace(/^node:/, '');
         if (NODE_BUILTINS.has(bareModule)) {
+          if (platform === 'node') {
+            return { external: true };
+          }
           return { path: `/__node_stub__/${bareModule}`, namespace: 'node-stub' };
         }
 
@@ -774,7 +784,7 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   }
 
   // Add VFS plugin if VFS is available
-  const vfsPlugin = createVFSPlugin(options.external);
+  const vfsPlugin = createVFSPlugin(options.external, options.platform);
   const plugins = [...(options.plugins || [])];
   if (vfsPlugin) {
     plugins.unshift(vfsPlugin);

@@ -1,7 +1,14 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
+import { readFileSync } from 'fs';
+import { execSync } from 'child_process';
 import wasm from 'vite-plugin-wasm';
 
+const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8'));
+let git = '';
+try { git = execSync('git rev-parse --short HEAD').toString().trim(); } catch {}
+try { if (execSync('git status --porcelain').toString().trim()) git += '-dirty'; } catch {}
+const version = `${pkg.version}+${git}@${new Date().toISOString()}`;
 
 export default defineConfig({
   plugins: [
@@ -27,6 +34,7 @@ export default defineConfig({
     },
   ],
   define: {
+    '__ALMOSTNODE_VERSION__': JSON.stringify(version),
     'process.env': {},
     global: 'globalThis',
   },

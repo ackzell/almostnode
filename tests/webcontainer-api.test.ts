@@ -198,8 +198,31 @@ describe('WebContainer (almostnode/webcontainer)', () => {
     });
 
     const proc = await wc.spawn('pnpm', ['install', '--prefer-offline']);
+
+    // Drain the output stream concurrently so we can assert progress streams.
+    let outputText = '';
+    const reader = proc.output.getReader();
+    const drain = (async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        outputText += value;
+      }
+    })();
+
     const code = await proc.exit;
+    await drain;
     expect(code).toBe(0);
+
+    // Install progress should stream through proc.output (terminal panel).
+    expect(outputText).toContain('Resolving');
+    expect(outputText).toContain('Installing');
+    expect(outputText).toContain('added 1 packages');
+
+    // Streamed output must carry PTY-style CRLF line endings so terminals
+    // render each line at column 0 (bare \n would staircase-indent).
+    expect(outputText).toMatch(/\r\n/);
+    expect(outputText).not.toMatch(/(?<!\r)\n/);
 
     const pkg = await wc.fs.readFile('node_modules/tiny-pkg/package.json', 'utf8');
     expect(JSON.parse(pkg as string).version).toBe('1.0.0');

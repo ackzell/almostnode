@@ -13,12 +13,12 @@ almostnode is a **real competitor to WebContainers (StackBlitz)**. It runs Node.
 When a package doesn't work, the fix goes into the generic shims (`fs`, `path`, `crypto`, etc.) or the generic module resolution in `src/runtime.ts`, not into a package-specific adapter. Every demo should use real npm packages installed via `PackageManager`, served via `/_npm/` bundling, and running through the standard runtime. No CDN shortcuts, no manual protocol reimplementations, no fake adapters.
 
 Exceptions that exist today (keep them minimal and generic):
-- `rollup` / `esbuild` / `rolldown` / `prettier` are intercepted in `runtime.ts` and replaced with pure-JS shims because their real builds have native binaries.
+- `rollup` / `esbuild` / `prettier` are intercepted in `runtime.ts` and replaced with pure-JS shims because their real builds have native binaries.
 - `node_modules` paths resolving to those packages are intercepted too (`src/runtime.ts:880-902`).
 
 ## Architecture
 
-- **Runtime** (`src/runtime.ts`, ~1500 lines) — JS execution engine with `require()`, ESM-to-CJS transforms, 50+ built-in module shims, module resolution (node_modules walk, package.json `exports`/`browser`/`module`/`main`, `#imports`), module cache. Intercepts `rollup`/`esbuild`/`rolldown`/`prettier`.
+- **Runtime** (`src/runtime.ts`, ~1500 lines) — JS execution engine with `require()`, ESM-to-CJS transforms, 50+ built-in module shims, module resolution (node_modules walk, package.json `exports`/`browser`/`module`/`main`, `#imports`), module cache. Intercepts `rollup`/`esbuild`/`prettier` and blocks `vite@8+`.
 - **VirtualFS** (`src/virtual-fs.ts`, ~900 lines) — In-memory POSIX filesystem with sync + promises + watch APIs, exposed as `require('fs')`. Snapshot/restore for worker/sandbox transfer.
 - **PackageManager** (`src/npm/`) — Real npm packages downloaded from the registry, resolved, extracted from tarballs, ESM-to-CJS transformed via esbuild-wasm (`src/transform.ts`), and bin stubs created in `/node_modules/.bin/`.
 - **Service Worker** (`public/__sw__.js`) — Network interception for HTTP servers. Requests to `/__virtual__/{port}/*` are routed to virtual servers. Version comment at top; bump it when changing.
@@ -76,17 +76,17 @@ Verified (unit tests green on `vite@7`):
 - `fs.promises.watch()` added; `require()`/`resolveModule` strip `file://` URLs; Vite HMR client stub exports `createHotContext`/`updateStyle`/`removeStyle`; `RealViteServer` invalidates Vite's module graph via `server.watcher.emit('change', path)`.
 
 Platform fixes that made Vue work (keep them generic):
-- **rolldown interception excludes `@rolldown/pluginutils`** (`src/runtime.ts`): it's a pure-JS utility the ecosystem needs; only native rolldown/binding packages get the shim.
 - **`vue`/`@vue/*` keep their ESM builds** at install time (`src/npm/index.ts`): the browser dev server must serve them as ESM; `require()` still works via the runtime's load-time ESM→CJS.
 - ESM→CJS handles aliased re-exports (`export { x as y }`).
+- **esbuild shim externalizes node builtins for Node-target bundles** (`src/shims/esbuild.ts`): Vite's config-file bundling runs with `platform: 'node'`; stubbing builtins there (e.g. `node:module` → `{}`) would strip APIs like `createRequire`. Externalizing them lets the runtime's own `require("node:module")`/`fs`/`path` resolve at load time.
 
 Known gaps:
-- `src/shims/rolldown.ts` is a pure-JS stub of rolldown's native Rust exports (acorn parse, identity stubs). `rolldown()`, `dev()`, `scan()` are no-ops.
 - Lightningcss native bindings not shimmed (Vite CSS pipeline).
-- **Vite version**: committed HEAD pins tests/demo to `vite@7` (the app's `vue` template also pins `^7`). The `vue-sass` template in amoxtli-vue-2 uses `vite@^8` — deferred until rolldown WASM lands.
+- **Vite version**: only `vite@7` is supported. `require('vite')` and installs of vite@8+ fail fast with a clear error (see `src/vite-version.ts`) instead of throwing cryptic bootstrap errors. Pin `vite@^7.0.0`.
 - Custom `ViteDevServer` still active as fallback.
+- **Rollup native binding**: after the `createRequire` fix, the host `pnpm run dev` flow gets past config load but `resolveConfig`/`_createServer` fails loading the *real* `rollup` native bindings (`Your current platform "linux" and architecture "undefined" … native Rollup build … use "@rollup/wasm-node"`). The `rollup` shim isn't catching this path yet — next blocker.
 
-Next steps: drive Vite 8 via real `@rolldown/browser` WASM, wire remaining rolldown/lightningcss stubs, deprecate custom `ViteDevServer`, migrate amoxtli-vue-2 onto `almostnode/webcontainer`.
+Next steps: fix the rollup-native-binding path during vite config load, deprecate custom `ViteDevServer`, migrate amoxtli-vue-2 onto `almostnode/webcontainer`.
 
 ## Conventions
 
@@ -105,7 +105,7 @@ Always bump `version` in `package.json` and update `CHANGELOG.md` before pushing
 - **`README.md`** — Public API docs, usage examples, comparison with WebContainers, sandbox setup.
 - **`CHANGELOG.md`** — Version history and what changed (very detailed; read the current section first).
 - **`docs/`** — HTML docs site (Getting Started, Core Concepts, Security, Next.js Guide, Vite Guide, API Reference, tutorials).
-- **`examples/`** — Working demo HTML files (next-demo, vite-demo, express-demo, real-vite-demo, etc.).
+- **`examples/`** — Working demo HTML files (next-demo, vite-demo, express-demo, vue-real-vite-demo, etc.).
 - **`e2e/`** — Playwright tests that exercise each demo.
 
 When working on a specific demo or feature, read the corresponding example HTML, its E2E spec, and its entry in `vite.config.js` first.

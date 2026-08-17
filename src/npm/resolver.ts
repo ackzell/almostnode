@@ -23,6 +23,7 @@ interface ResolveContext {
   registry: Registry;
   resolved: Map<string, ResolvedPackage>;
   resolving: Set<string>;
+  expanded: Set<string>;
   options: ResolveOptions;
 }
 
@@ -256,6 +257,7 @@ export async function resolveDependencies(
     registry,
     resolved: new Map(),
     resolving: new Set(),
+    expanded: new Set(),
     options,
   };
 
@@ -279,6 +281,7 @@ export async function resolveFromPackageJson(
     registry,
     resolved: new Map(),
     resolving: new Set(),
+    expanded: new Set(),
     options,
   };
 
@@ -288,11 +291,89 @@ export async function resolveFromPackageJson(
     Object.assign(deps, packageJson.devDependencies);
   }
 
+  // Phase 1: pin direct/top-level dependency versions first so an explicit
+  // range in the project's package.json wins over any transitive/peer range.
+  // Example: the vue template pins `vite: ^7.0.0`, but `@vitejs/plugin-vue`
+  // peers on `vite: ^5 || ^6 || ^7 || ^8`. Without this pass, plugin-vue's
+  // peer would resolve vite to 8.x first and the flat node_modules fallback
+  // would keep it, silently ignoring the template's ^7.0.0.
+  for (const [name, range] of Object.entries(deps)) {
+    await resolvePackageVersion(name, range, context);
+  }
+
+  // Phase 2: recursively expand the full dependency tree, reusing the versions
+  // pinned in phase 1 for any already-resolved packages.
   for (const [name, range] of Object.entries(deps)) {
     await resolvePackage(name, range, context);
   }
 
   return context.resolved;
+}
+
+/**
+ * Resolve a single package's version and store it in the resolved map.
+ * Does NOT recurse into the package's own dependencies.
+ *
+ * In a flat node_modules layout a package can only have one version, so once
+ * a version is pinned (direct deps are resolved first) a conflicting request
+ * from a transitive/peer dependency reuses the existing version instead of
+ * overriding it.
+ */
+async function resolvePackageVersion(
+  packageName: string,
+  versionRange: string,
+  context: ResolveContext
+): Promise<ResolvedPackage> {
+  const { registry, resolved, options } = context;
+
+  // If already resolved and the existing version satisfies the range, reuse it.
+  // Otherwise keep the existing version anyway — direct deps are pinned first,
+  // so a transitive/peer range must not silently override a direct requirement.
+  if (resolved.has(packageName)) {
+    const existing = resolved.get(packageName)!;
+    if (satisfies(existing.version, versionRange)) {
+      return existing;
+    }
+    return existing;
+  }
+
+  options.onProgress?.(`Resolving ${packageName}@${versionRange}`);
+
+  // Fetch package manifest
+  const manifest = await registry.getPackageManifest(packageName);
+
+  // Find best matching version
+  const versions = Object.keys(manifest.versions);
+  let targetVersion: string;
+
+  if (versionRange === 'latest' || versionRange === '*') {
+    targetVersion = manifest['dist-tags'].latest;
+  } else if (manifest['dist-tags'][versionRange]) {
+    targetVersion = manifest['dist-tags'][versionRange];
+  } else {
+    const best = findBestVersion(versions, versionRange);
+    if (!best) {
+      throw new Error(
+        `No matching version found for ${packageName}@${versionRange}`
+      );
+    }
+    targetVersion = best;
+  }
+
+  // Get version metadata
+  const versionData = manifest.versions[targetVersion];
+
+  // Store resolved package
+  const resolvedPackage: ResolvedPackage = {
+    name: packageName,
+    version: targetVersion,
+    tarballUrl: versionData.dist.tarball,
+    dependencies: versionData.dependencies || {},
+  };
+
+  resolved.set(packageName, resolvedPackage);
+
+  return resolvedPackage;
 }
 
 /**
@@ -303,7 +384,12 @@ async function resolvePackage(
   versionRange: string,
   context: ResolveContext
 ): Promise<void> {
-  const { registry, resolved, resolving, options } = context;
+  const { resolved, resolving, expanded, options } = context;
+
+  // Skip if this package's subtree has already been fully expanded.
+  if (expanded.has(packageName)) {
+    return;
+  }
 
   // Create a key for this package request
   const key = `${packageName}@${versionRange}`;
@@ -313,55 +399,17 @@ async function resolvePackage(
     return;
   }
 
-  // Check if we've already resolved a compatible version
-  if (resolved.has(packageName)) {
-    const existing = resolved.get(packageName)!;
-    if (satisfies(existing.version, versionRange)) {
-      return;
-    }
-    // If existing version doesn't satisfy, we might need nested deps
-    // For MVP, we'll just use the existing version (flat node_modules)
-    return;
-  }
+  const resolvedPackage = await resolvePackageVersion(packageName, versionRange, context);
 
   resolving.add(key);
 
   try {
-    options.onProgress?.(`Resolving ${packageName}@${versionRange}`);
-
-    // Fetch package manifest
-    const manifest = await registry.getPackageManifest(packageName);
-
-    // Find best matching version
-    const versions = Object.keys(manifest.versions);
-    let targetVersion: string;
-
-    if (versionRange === 'latest' || versionRange === '*') {
-      targetVersion = manifest['dist-tags'].latest;
-    } else if (manifest['dist-tags'][versionRange]) {
-      targetVersion = manifest['dist-tags'][versionRange];
-    } else {
-      const best = findBestVersion(versions, versionRange);
-      if (!best) {
-        throw new Error(
-          `No matching version found for ${packageName}@${versionRange}`
-        );
-      }
-      targetVersion = best;
+    // Re-fetch the manifest to read the resolved version's peer/dep ranges.
+    const manifest = await context.registry.getPackageManifest(packageName);
+    const versionData = manifest.versions[resolvedPackage.version];
+    if (!versionData) {
+      return;
     }
-
-    // Get version metadata
-    const versionData = manifest.versions[targetVersion];
-
-    // Store resolved package
-    const resolvedPackage: ResolvedPackage = {
-      name: packageName,
-      version: targetVersion,
-      tarballUrl: versionData.dist.tarball,
-      dependencies: versionData.dependencies || {},
-    };
-
-    resolved.set(packageName, resolvedPackage);
 
     // Resolve dependencies in parallel
     // Include non-optional peerDependencies (npm v7+ behavior).
@@ -370,9 +418,9 @@ async function resolvePackage(
 
     if (versionData.peerDependencies) {
       const meta = versionData.peerDependenciesMeta || {};
-      for (const [name, range] of Object.entries(versionData.peerDependencies)) {
-        if (!meta[name]?.optional) {
-          deps[name] = range;
+      for (const [depName, range] of Object.entries(versionData.peerDependencies)) {
+        if (!meta[depName]?.optional) {
+          deps[depName] = range;
         }
       }
     }
@@ -395,6 +443,8 @@ async function resolvePackage(
         );
       }
     }
+
+    expanded.add(packageName);
   } finally {
     resolving.delete(key);
   }
