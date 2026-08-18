@@ -282,6 +282,45 @@ describe('Runtime', () => {
       expect(exports).toBe('simple');
     });
 
+    it('should resolve file:// URLs with percent-encoded paths', () => {
+      vfs.writeFileSync(
+        '/node_modules/@scope/pkg/index.js',
+        'module.exports = "scoped";'
+      );
+
+      const { exports } = runtime.execute(`
+        module.exports = require('file:///node_modules/%40scope/pkg/index.js');
+      `);
+
+      expect(exports).toBe('scoped');
+    });
+
+    it('should unwrap ESM default import interop', () => {
+      vfs.writeFileSync('/plugin.mjs', `
+        function vuePlugin() { return { name: 'vue' }; }
+        exports.default = vuePlugin;
+        Object.defineProperty(exports, '__esModule', { value: true });
+      `);
+      vfs.writeFileSync('/main.mjs', `
+        import vue from './plugin.mjs';
+        module.exports = vue();
+      `);
+
+      const { exports } = runtime.runFile('/main.mjs');
+      expect(exports).toEqual({ name: 'vue' });
+    });
+
+    it('should keep default import as module.exports for plain CJS modules', () => {
+      vfs.writeFileSync('/plain.cjs', 'module.exports = 42;');
+      vfs.writeFileSync('/main-plain.mjs', `
+        import val from './plain.cjs';
+        module.exports = val;
+      `);
+
+      const { exports } = runtime.runFile('/main-plain.mjs');
+      expect(exports).toBe(42);
+    });
+
     it('should cache modules', () => {
       vfs.writeFileSync('/counter.js', `
         let count = 0;

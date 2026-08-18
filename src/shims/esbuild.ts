@@ -629,6 +629,16 @@ function createVFSPlugin(externals?: string[], platform?: string): unknown {
       b.onResolve({ filter: /.*/ }, (args: { path: string; importer: string }) => {
         const { path: importPath, importer } = args;
 
+        // Never bundle packages with native binaries. The runtime's require()
+        // intercepts these and substitutes pure-JS shims (rollup -> @rollup/browser,
+        // esbuild -> esbuild-wasm, prettier -> JS). Bundling them here would inline
+        // their native bindings (e.g. rollup/dist/native.js), which throw
+        // "unsupported platform/architecture" at runtime. Keep them external so they
+        // resolve through the runtime at load time instead.
+        if (/^(rollup(\/|$)|@rollup\/rollup-|esbuild(\/|$)|@esbuild\/|prettier(\/|$))/.test(importPath)) {
+          return { external: true };
+        }
+
         // Skip external modules (node_modules, bare imports)
         if (importPath.startsWith('node_modules/')) {
           return { external: true };
@@ -732,14 +742,14 @@ function createVFSPlugin(externals?: string[], platform?: string): unknown {
 
       // Load file contents from VFS
       // Apply path remapping when reading to find the actual file
-      b.onLoad({ filter: /^\/.*/ }, (args: { path: string; pluginData?: { fromVFS?: boolean; realPath?: string } }) => {
-        // Only handle files that were resolved by our plugin
-        if (!args.pluginData?.fromVFS) {
-          return null; // Let other loaders handle it
-        }
+      b.onLoad({ filter: /.*/ }, (args: { path: string; pluginData?: { fromVFS?: boolean; realPath?: string } }) => {
         try {
-          // Use realPath if available (set when .mjs/.cjs was normalized to .js)
-          const vfsPath = args.pluginData.realPath || args.path;
+          // Read any file that exists in the VFS. esbuild-wasm's default file
+          // loader is "not implemented on js", so we must serve reads for files
+          // resolved by other plugins too (e.g. Vite's dep optimizer resolves
+          // `birpc`/`vue` itself), not just files our onResolve marked.
+          const rawPath = args.pluginData?.realPath || args.path;
+          const vfsPath = rawPath.startsWith('/') ? rawPath : '/' + rawPath;
           let contents: string;
           const remappedPath = remapVFSPath(vfsPath);
 
@@ -748,10 +758,10 @@ function createVFSPlugin(externals?: string[], platform?: string): unknown {
           } else if (remappedPath !== vfsPath && vfs.existsSync(remappedPath)) {
             contents = vfs.readFileSync(remappedPath, 'utf8');
           } else {
-            throw new Error(`File not found: ${vfsPath} (tried ${remappedPath})`);
+            return null; // Not in VFS — let other loaders / default handle it
           }
 
-          const ext = args.path.substring(args.path.lastIndexOf('.'));
+          const ext = vfsPath.substring(vfsPath.lastIndexOf('.'));
           let loader: 'ts' | 'tsx' | 'js' | 'jsx' | 'json' = 'ts';
           if (ext === '.tsx') loader = 'tsx';
           else if (ext === '.js' || ext === '.mjs' || ext === '.cjs') loader = 'js';
@@ -759,8 +769,8 @@ function createVFSPlugin(externals?: string[], platform?: string): unknown {
           else if (ext === '.json') loader = 'json';
 
           return { contents, loader };
-        } catch (err) {
-          return { errors: [{ text: `Failed to load ${args.path}: ${err}` }] };
+        } catch {
+          return null;
         }
       });
     },
@@ -783,11 +793,16 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     throw new Error('esbuild not initialized');
   }
 
-  // Add VFS plugin if VFS is available
+  // Add VFS plugin if VFS is available. Register it LAST so it acts as a
+  // fallback resolver: user plugins (e.g. Vite's `externalize-deps` during
+  // config-file bundling) get first chance to externalize bare imports like
+  // `vite`/`@vitejs/plugin-vue`. Bundling those inlines their `#package-imports`
+  // (e.g. vite's `#module-sync-enabled`) into the bundle, where they lose their
+  // package context and fail to resolve at runtime.
   const vfsPlugin = createVFSPlugin(options.external, options.platform);
   const plugins = [...(options.plugins || [])];
   if (vfsPlugin) {
-    plugins.unshift(vfsPlugin);
+    plugins.push(vfsPlugin);
   }
 
   // Resolve entry points to absolute paths.
@@ -830,6 +845,11 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
   // In browser, we need write: false to get outputFiles
   // Pass absWorkingDir so metafile paths are relative to the correct directory
   const resolvedAbsWorkingDir = options.absWorkingDir || (typeof globalThis !== 'undefined' && globalThis.process && typeof globalThis.process.cwd === 'function' ? globalThis.process.cwd() : '/');
+  // esbuild-wasm can only produce in-memory output (`write: false`). When the
+  // caller expects files on disk (e.g. Vite's dep optimizer passes `outdir` with
+  // the default `write: true`), emulate it by writing the output files into the
+  // VFS after the build completes.
+  const wantsWrite = options.write !== false && (options.outdir != null || options.outfile != null);
   const result = await esbuildInstance.build({
     ...options,
     entryPoints,
@@ -862,6 +882,20 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
     }
   }
 
+  // Emulate `write: true` by writing output files into the VFS.
+  if (wantsWrite && result.outputFiles && globalVFS) {
+    for (const file of result.outputFiles) {
+      try {
+        const dir = file.path.slice(0, file.path.lastIndexOf('/'));
+        if (dir) globalVFS.mkdirSync(dir, { recursive: true });
+        const contents = file.text ?? new TextDecoder().decode(file.contents);
+        globalVFS.writeFileSync(file.path, contents);
+      } catch {
+        // Non-fatal — best effort write to VFS.
+      }
+    }
+  }
+
   return result;
 }
 
@@ -879,9 +913,33 @@ export function version(): string {
   return '0.20.0'; // Version of esbuild-wasm we're using
 }
 
-// Context API (minimal stub for compatibility)
-export async function context(_options: BuildOptions): Promise<unknown> {
-  throw new Error('esbuild context API is not supported in browser');
+/**
+ * Format esbuild error/warning messages into printable strings.
+ * Vite calls this to render build diagnostics. esbuild-wasm exposes the real
+ * one, but our shim only surfaces the raw message objects (each has a `.text`).
+ */
+export async function formatMessages(
+  messages: unknown[],
+  _options?: { kind?: 'error' | 'warning'; color?: boolean }
+): Promise<string[]> {
+  return (messages || []).map((m) => {
+    if (m && typeof m === 'object' && 'text' in m) {
+      return (m as { text: string }).text;
+    }
+    return String(m);
+  });
+}
+
+// Context API — backed by build(). Vite's dep optimizer (scan + pre-bundle)
+// uses esbuild.context().rebuild(), which esbuild-wasm doesn't expose through
+// our shim. Rebuilding with a full build() is non-incremental but correct for
+// this use case, and reuses the VFS plugin + write-to-VFS emulation in build().
+export async function context(options: BuildOptions): Promise<unknown> {
+  return {
+    rebuild: () => build(options),
+    dispose: () => Promise.resolve(),
+    cancel: () => Promise.resolve(),
+  };
 }
 
 // Default export matching esbuild's API
@@ -895,6 +953,7 @@ export default {
   buildSync,
   context,
   version,
+  formatMessages,
   setWasmURL,
   setVFS,
 };

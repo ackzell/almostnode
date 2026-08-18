@@ -262,6 +262,26 @@ function createDynamicImport(moduleRequire: RequireFunction): (specifier: string
   };
 }
 
+/**
+ * Convert a file:// URL to a VFS path, matching Node's url.fileURLToPath
+ * (percent-decodes the path). Vite externalizes config deps as file URLs like
+ * `file:///node_modules/%40vitejs/plugin-vue/dist/index.mjs`, where the `@` is
+ * encoded as `%40`. Naively stripping `file://` leaves the literal `%40` and
+ * resolution fails.
+ */
+function fileUrlToPath(id: string): string {
+  try {
+    let path = urlShim.fileURLToPath(id);
+    // Windows-style file:///C:/ → C:/
+    if (path.startsWith('/') && path[2] === ':') {
+      path = path.slice(1);
+    }
+    return path;
+  } catch {
+    return id.slice(7);
+  }
+}
+
 export interface Module {
   id: string;
   filename: string;
@@ -507,10 +527,7 @@ function createRequire(
     }
     // Handle file:// URLs
     if (id.startsWith('file://')) {
-      id = id.slice(7);
-      if (id.startsWith('/') && id[2] === ':') {
-        id = id.slice(1);
-      }
+      id = fileUrlToPath(id);
     }
 
     // Built-in modules
@@ -881,10 +898,7 @@ ${code}
     }
     // Handle file:// URLs (e.g. Vite loading preprocessors via import('file:///...'))
     if (id.startsWith('file://')) {
-      id = id.slice(7);
-      if (id.startsWith('/') && id[2] === ':') {
-        id = id.slice(1); // Windows-style file:///C:/ → C:/
-      }
+      id = fileUrlToPath(id);
     }
 
     // Built-in modules
@@ -905,11 +919,7 @@ ${code}
           // Convert file:// URL to path
           let fromPath = filenameOrUrl;
           if (filenameOrUrl.startsWith('file://')) {
-            fromPath = filenameOrUrl.slice(7); // Remove 'file://'
-            // Handle Windows-style file:///C:/ URLs (though unlikely in our env)
-            if (fromPath.startsWith('/') && fromPath[2] === ':') {
-              fromPath = fromPath.slice(1);
-            }
+            fromPath = fileUrlToPath(filenameOrUrl);
           }
           // Get directory from the path
           const fromDir = pathShim.dirname(fromPath);

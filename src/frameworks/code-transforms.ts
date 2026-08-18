@@ -375,7 +375,9 @@ function transformEsmToCjsAst(code: string): string {
 
         const parts: string[] = [];
         if (defaultSpec) {
-          parts.push(`const ${defaultSpec.local.name} = require(${JSON.stringify(source)})`);
+          parts.push(
+            `const ${defaultSpec.local.name} = ((m) => (m && typeof m === 'object' && ('default' in m || '__esModule' in m) ? m.default : m))(require(${JSON.stringify(source)}))`
+          );
         }
         if (nsSpec) {
           parts.push(`const ${nsSpec.local.name} = require(${JSON.stringify(source)})`);
@@ -471,7 +473,7 @@ function transformEsmToCjsRegex(code: string): string {
 
   transformed = transformed.replace(
     /import\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g,
-    'const $1 = require("$2")',
+    'const $1 = ((m) => (m && typeof m === "object" && ("default" in m || "__esModule" in m) ? m.default : m))(require("$2"))',
   );
   transformed = transformed.replace(
     /import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g,

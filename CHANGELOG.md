@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-08-18
+
+This release diverges from the upstream 0.2.x line and makes the **real `vite` CLI run end-to-end in the browser** — `pnpm install` + `pnpm run dev` on a Vue project now boots and serves through `almostnode/webcontainer`.
+
+### Fixed
+- **Rollup native binding**: the esbuild shim now externalizes `rollup`/`@rollup/rollup-*`/`esbuild`/`@esbuild/*`/`prettier`, and `process.arch`/`process.report` are provided, so Vite no longer hits `platform "linux" and architecture "undefined"`.
+- **`#module-sync-enabled`**: the esbuild shim registers its VFS plugin *last*, letting Vite's `externalize-deps` externalize `vite`/`@vitejs/plugin-vue` during config bundling instead of inlining them.
+- **`file://` imports**: `require()`/`resolveModule` percent-decode file URLs (e.g. `%40` → `@`).
+- **ESM default-import interop**: `import X from 'y'` unwraps `.default` when the module is ESM-shaped (fixes `vue is not a function` for `@vitejs/plugin-vue`).
+- **Dep optimizer**: esbuild shim implements `context()` (build-backed) + `formatMessages()` + `write`-to-VFS emulation, and its VFS `onLoad` serves reads for files resolved by Vite's own plugins (fixes `esbuild context API is not supported` / `not implemented on js`).
+- **ESM preservation**: `.mjs` files and dual-package (separate ESM+CJS) entries are no longer CJS-transformed at install time, so Vite's dep optimizer sees their real ESM exports (fixes `birpc.js does not provide an export named 'default'`).
+
+### Known issues
+- **HMR/WebSocket**: Vite's HMR client's native WebSocket can't reach the virtual server (service workers can't proxy WebSockets), so live-reload is not yet wired for the `vite` CLI / webcontainer path.
+
 ## [0.2.15] - 2026-06-10
 
 ### Added

@@ -67,26 +67,29 @@ Run `npm run type-check` and `npm run test:run` after any change before consider
 
 Goal: run **real Vite** inside the browser via `vite.createServer()`, replacing the custom `ViteDevServer`, and expose a **drop-in `@webcontainer/api` facade** so WebContainers apps can swap runtimes.
 
-Verified (unit tests green on `vite@7`):
+Verified (unit tests green on `vite@7`, and the amoxtli `vite` template now boots via `pnpm install` + `pnpm run dev` through `almostnode/webcontainer`):
 - `require('vite')` succeeds; `createServer({ middlewareMode: true })` returns a working server.
 - `RealViteServer` serves HTML/JS/TS/Vue SFCs through real Vite middleware via the SW bridge; custom `@vite/client` HMR stub.
 - **`@vitejs/plugin-vue` works** (`.vue` script setup + template + scoped styles) and **sass preprocesses** `.scss` — see `tests/vue-real-vite.test.ts` and `examples/vue-real-vite-demo.html` (+ `e2e/vue-real-vite-demo.spec.ts`).
 - **`almostnode/webcontainer`** subpath: `WebContainer.boot()/fs/mount/spawn/on` backed by almostnode — see `src/webcontainer-api.ts` + `tests/webcontainer-api.test.ts`.
 - Generic package-manager agent (`npm`/`pnpm`/`yarn`/`bun`) in `child_process.ts` (`pnpm install --prefer-offline`, `pnpm run dev` work).
-- `fs.promises.watch()` added; `require()`/`resolveModule` strip `file://` URLs; Vite HMR client stub exports `createHotContext`/`updateStyle`/`removeStyle`; `RealViteServer` invalidates Vite's module graph via `server.watcher.emit('change', path)`.
+- **The real `vite` CLI boots and serves in the browser**: config-file bundling (`vite.config.ts` → esbuild) works, dependency pre-bundling (`.vite/deps`) works via the esbuild shim's `context()`/`formatMessages()`/write-to-VFS emulation, and `#module-sync-enabled`/`file://` imports resolve.
+- `fs.promises.watch()` added; `require()`/`resolveModule` strip + percent-decode `file://` URLs; Vite HMR client stub exports `createHotContext`/`updateStyle`/`removeStyle`; `RealViteServer` invalidates Vite's module graph via `server.watcher.emit('change', path)`.
 
-Platform fixes that made Vue work (keep them generic):
-- **`vue`/`@vue/*` keep their ESM builds** at install time (`src/npm/index.ts`): the browser dev server must serve them as ESM; `require()` still works via the runtime's load-time ESM→CJS.
-- ESM→CJS handles aliased re-exports (`export { x as y }`).
-- **esbuild shim externalizes node builtins for Node-target bundles** (`src/shims/esbuild.ts`): Vite's config-file bundling runs with `platform: 'node'`; stubbing builtins there (e.g. `node:module` → `{}`) would strip APIs like `createRequire`. Externalizing them lets the runtime's own `require("node:module")`/`fs`/`path` resolve at load time.
+Platform fixes that made real Vite work (keep them generic):
+- **`.mjs` files are never CJS-transformed at install time** (`src/transform.ts`): they're ESM by definition, and Vite's dep optimizer reads them as ESM. `require()` still works via the runtime's load-time ESM→CJS. This fixed `birpc` (ESM-only) and any `.mjs` package.
+- **Dual packages (separate ESM+CJS entries, e.g. `nanoid`, `entities`) are kept ESM** (`isDualPackage` in `src/npm/index.ts`), plus **`vue`/`@vue/*`** keep their ESM builds.
+- **esbuild shim** (`src/shims/esbuild.ts`): externalizes node builtins for Node-target bundles (vite config bundling), externalizes native-binary packages (`rollup`/`esbuild`/`prettier`) so they resolve through the runtime shims, registers the VFS plugin as a *fallback* (so Vite's `externalize-deps` runs first), reads any VFS path in `onLoad`, and implements `context()` + `formatMessages()` + write-to-VFS emulation for Vite's dep optimizer.
+- **`process.arch`/`process.report`** added (`src/shims/process.ts`) — fixes Rollup's "architecture undefined" native-binding probe.
+- **ESM→CJS default-import interop** (`src/frameworks/code-transforms.ts`): `import X from 'y'` unwraps `.default` when the module is ESM-shaped, so `@vitejs/plugin-vue` (and other ESM default exports) load correctly.
 
 Known gaps:
+- **HMR/WebSocket**: Vite's HMR client uses a native browser WebSocket to `ws://<virtual-port>`, which can't reach the virtual server (service workers can't proxy WebSockets). Initial render works; live-reload doesn't. `RealViteServer` works around it with a `postMessage` HMR stub — porting that transport to the `vite` CLI / webcontainer path is the next step.
 - Lightningcss native bindings not shimmed (Vite CSS pipeline).
 - **Vite version**: only `vite@7` is supported. `require('vite')` and installs of vite@8+ fail fast with a clear error (see `src/vite-version.ts`) instead of throwing cryptic bootstrap errors. Pin `vite@^7.0.0`.
 - Custom `ViteDevServer` still active as fallback.
-- **Rollup native binding**: after the `createRequire` fix, the host `pnpm run dev` flow gets past config load but `resolveConfig`/`_createServer` fails loading the *real* `rollup` native bindings (`Your current platform "linux" and architecture "undefined" … native Rollup build … use "@rollup/wasm-node"`). The `rollup` shim isn't catching this path yet — next blocker.
 
-Next steps: fix the rollup-native-binding path during vite config load, deprecate custom `ViteDevServer`, migrate amoxtli-vue-2 onto `almostnode/webcontainer`.
+Next steps: implement postMessage/BroadcastChannel-based HMR for the `vite` CLI / `almostnode/webcontainer` flow, deprecate custom `ViteDevServer`.
 
 ## Conventions
 

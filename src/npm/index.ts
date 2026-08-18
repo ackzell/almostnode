@@ -15,6 +15,7 @@ import { downloadAndExtract, extractTarball } from './tarball';
 import * as path from '../shims/path';
 import { initTransformer, transformPackage, isTransformerReady } from '../transform';
 import { assertViteSupported } from '../vite-version';
+import type { PackageJson } from '../types/package-json';
 
 /**
  * Normalize a package.json bin field into a consistent Record<string, string>.
@@ -28,6 +29,48 @@ function normalizeBin(pkgName: string, bin?: Record<string, string> | string): R
     return { [cmdName]: bin };
   }
   return bin;
+}
+
+/**
+ * Resolve an exports/imports condition value to a file path string.
+ * Handles both the string form ("condition": "./x.js") and the nested-object
+ * form ("condition": { "default": "./x.js" }).
+ */
+function resolveConditionString(cond: unknown): string | undefined {
+  if (typeof cond === 'string') return cond;
+  if (cond && typeof cond === 'object') {
+    const o = cond as Record<string, unknown>;
+    if (typeof o.default === 'string') return o.default;
+    if (typeof o.import === 'string') return o.import;
+    if (typeof o.require === 'string') return o.require;
+  }
+  return undefined;
+}
+
+/**
+ * A "dual" package ships separate ESM and CJS entry points (e.g. birpc's
+ * `dist/index.mjs` + `dist/index.cjs`). For these we must NOT transform the ESM
+ * entry to CJS at install time: `require()` already resolves the CJS entry via
+ * `exports.require`/`main`, while Vite's dep optimizer needs the original ESM
+ * source to detect `needsInterop` correctly (transforming it to CJS makes Vite
+ * rewrite named imports into a default import that the pre-bundle lacks).
+ */
+export function isDualPackage(pkgJson: PackageJson): boolean {
+  const exp = pkgJson.exports;
+  if (exp && typeof exp === 'object' && !Array.isArray(exp)) {
+    const exportsObj = exp as Record<string, unknown>;
+    const dot = exportsObj['.'];
+    const entry = dot && typeof dot === 'object' ? dot : exp;
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+      const im = resolveConditionString((entry as Record<string, unknown>).import);
+      const req = resolveConditionString((entry as Record<string, unknown>).require);
+      if (im && req && im !== req) return true;
+    }
+  }
+  if (typeof pkgJson.module === 'string' && typeof pkgJson.main === 'string' && pkgJson.module !== pkgJson.main) {
+    return true;
+  }
+  return false;
 }
 
 export interface InstallOptions {
@@ -203,14 +246,28 @@ export class PackageManager {
             stripComponents: 1, // Strip "package/" prefix
           });
 
+          // Read package.json once (reused below for the transform decision and
+          // bin-stub creation).
+          let pkgJson: PackageJson | null = null;
+          const pkgJsonPath = path.join(pkgPath, 'package.json');
+          if (this.vfs.existsSync(pkgJsonPath)) {
+            try {
+              pkgJson = JSON.parse(this.vfs.readFileSync(pkgJsonPath, 'utf8')) as PackageJson;
+            } catch {
+              pkgJson = null;
+            }
+          }
+
           // Transform ESM to CJS
           if (shouldTransform) {
             // Keep ESM-only framework runtime packages as ESM so browser dev
             // servers (real Vite) can serve them with real named exports.
             // require() of these still works — the runtime transforms ESM→CJS
-            // at load time.
+            // at load time. Dual packages (separate ESM+CJS entries) are also
+            // kept as ESM — their .cjs entry already serves require().
             const isEsmOnlyRuntime = name === 'vue' || name.startsWith('@vue/');
-            if (!isEsmOnlyRuntime) {
+            const isDual = !!pkgJson && isDualPackage(pkgJson);
+            if (!isEsmOnlyRuntime && !isDual) {
               try {
                 const count = await transformPackage(this.vfs, pkgPath, onProgress);
                 if (count > 0) {
@@ -224,10 +281,8 @@ export class PackageManager {
 
           // Create bin stubs in /node_modules/.bin/
           try {
-            const pkgJsonPath = path.join(pkgPath, 'package.json');
-            if (this.vfs.existsSync(pkgJsonPath)) {
-              const pkgJson = JSON.parse(this.vfs.readFileSync(pkgJsonPath, 'utf8'));
-              const binEntries = normalizeBin(name, pkgJson.bin);
+            if (pkgJson) {
+              const binEntries = normalizeBin(name, pkgJson.bin as Record<string, string> | string | undefined);
               const binDir = path.join(nodeModulesPath, '.bin');
               for (const [cmdName, entryPath] of Object.entries(binEntries)) {
                 this.vfs.mkdirSync(binDir, { recursive: true });

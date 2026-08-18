@@ -8,10 +8,41 @@ import {
   resolveFromPackageJson,
 } from '../src/npm/resolver';
 import { extractTarball, decompress } from '../src/npm/tarball';
-import { parsePackageSpec, PackageManager } from '../src/npm';
+import { parsePackageSpec, PackageManager, isDualPackage } from '../src/npm';
 import pako from 'pako';
 
 describe('npm', () => {
+  describe('isDualPackage', () => {
+    it('detects dual packages via distinct exports import/require', () => {
+      expect(isDualPackage({
+        exports: { '.': { import: './dist/index.mjs', require: './dist/index.cjs' } },
+      })).toBe(true);
+    });
+
+    it('detects dual packages via module + main fields', () => {
+      expect(isDualPackage({
+        module: './dist/index.mjs',
+        main: './dist/index.cjs',
+      })).toBe(true);
+    });
+
+    it('returns false for a single-entry package (exports "." as string)', () => {
+      expect(isDualPackage({ exports: { '.': './dist/index.js' } })).toBe(false);
+    });
+
+    it('returns false for ESM-only packages (import condition only)', () => {
+      expect(isDualPackage({
+        exports: { '.': { import: './dist/index.mjs' } },
+      })).toBe(false);
+    });
+
+    it('returns false when import and require point to the same file', () => {
+      expect(isDualPackage({
+        exports: { '.': { import: './dist/index.js', require: './dist/index.js' } },
+      })).toBe(false);
+    });
+  });
+
   describe('semver', () => {
     describe('parseVersion', () => {
       it('should parse standard versions', () => {

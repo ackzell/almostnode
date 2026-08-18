@@ -80,6 +80,15 @@ describe('process module (Node.js compat)', () => {
     });
   });
 
+  describe('process.arch', () => {
+    it('should return a valid arch string', () => {
+      const proc = createProcess();
+      expect(typeof proc.arch).toBe('string');
+      const validArchs = ['arm', 'arm64', 'ia32', 'loong64', 'mips', 'mipsel', 'ppc', 'ppc64', 'riscv64', 's390', 's390x', 'x32', 'x64'];
+      expect(validArchs).toContain(proc.arch);
+    });
+  });
+
   describe('process.version', () => {
     it('should return a version string starting with v', () => {
       const proc = createProcess();

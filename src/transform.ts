@@ -297,7 +297,6 @@ function findJsFiles(vfs: VirtualFS, dir: string): string[] {
           }
         } else if (
           entry.endsWith('.js') ||
-          entry.endsWith('.mjs') ||
           entry.endsWith('.jsx')
         ) {
           files.push(fullPath);

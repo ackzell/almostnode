@@ -48,6 +48,8 @@ export interface Process {
   cwd: () => string;
   chdir: (directory: string) => void;
   platform: string;
+  arch: string;
+  report: { getReport: () => { header: { glibcVersionRuntime?: string; osName?: string } } };
   version: string;
   versions: { node: string; v8: string; uv: string };
   argv: string[];
@@ -234,6 +236,12 @@ export function createProcess(options?: {
     },
 
     platform: 'linux', // Pretend to be linux for better compatibility
+    arch: 'x64',
+    report: {
+      getReport() {
+        return { header: { osName: 'Linux', glibcVersionRuntime: '2.31' } };
+      },
+    },
     version: 'v24.0.0',
     versions: { node: '24.0.0', v8: '13.6.354.15', uv: '1.51.0' },
 
