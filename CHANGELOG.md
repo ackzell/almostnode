@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-08-18
+
+**Vite HMR now works end-to-end in the browser** for the real-Vite / webcontainer path. Preview starts, the bridge socket connects, and edits to a Vue SFC (or any self-accepting module) hot-update in place — no full page reload.
+
+### Fixed
+- **Bundled-ws redirect now applies to cached modules**: the `WebSocketServerRaw → require("ws").Server` redirect (`src/vite-ws-redirect.ts`) is re-applied on *every* vite module load, including `if (!code)` cache hits in `Runtime#loadModule`. Previously a long-lived worker whose module cache was seeded before the redirect existed kept the unredirected bundled `ws`, so the HMR bridge never attached.
+- **VFS edits reach Vite's module graph**: `viteHmrBridgePlugin` now sets up a recursive `vfs.watch(server.config.root)` (`setupVfsWatcher` in `src/vite-hmr-inject.ts`) and forwards `file-changed`/`rename` events into `server.watcher.emit('change'|'add'|'unlink', path)`, with a `moduleGraph.invalidateModule` fallback. `src/runtime.ts` passes the `vfs` into `wrapViteCreateServer`.
+
+### Added
+- **Opt-in HMR diagnostics**: every `[almostnode-hmr]` log (bridge connect, ws relay, watcher forwarding, browser shim) is now gated behind `ALMOSTNODE_HMR_DIAG=1` (env) or `globalThis.__ALMOSTNODE_HMR_DIAG__`/`window.__ALMOSTNODE_HMR_DIAG__` — silent by default (`src/shims/hmr-diag.ts`).
+- **Regression test**: `tests/vite-hmr-bridge.test.ts` now drives a full loop — load-time redirect, BroadcastChannel client ack, a self-accepting module thrown into the graph, a VFS write, and the resulting `{"type":"update",...}` payload delivered back over the bridge.
+
+### Known issues
+- **HMR on the `vite` CLI walk-through still uses the custom HMR stub**: the `RealViteServer`/`createServer` flow is fully verified; porting the bridge transport to the `vite` CLI / `almostnode/webcontainer` `pnpm run dev` path remains.
+- Cold-boot: the browser bridge shim posts `connect` once; a preview opened before the dev server is ready may not attach (re-post/retry is the next fix).
+
 ## [0.3.0] - 2026-08-18
 
 This release diverges from the upstream 0.2.x line and makes the **real `vite` CLI run end-to-end in the browser** — `pnpm install` + `pnpm run dev` on a Vue project now boots and serves through `almostnode/webcontainer`.

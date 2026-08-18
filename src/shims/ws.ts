@@ -4,6 +4,7 @@
  */
 
 import { EventEmitter } from './events';
+import { hmrDiagEnabled } from './hmr-diag';
 
 // Polyfill for CloseEvent (not available in Node.js)
 const CloseEventPolyfill = typeof CloseEvent !== 'undefined' ? CloseEvent : class CloseEvent extends Event {
@@ -35,6 +36,26 @@ try {
   // BroadcastChannel not available in some environments
 }
 
+// Broadcast channel that tunnels Vite HMR clients (running in a browser
+// preview iframe) to the WebSocketServer inside the container. Service
+// workers can't proxy native WebSockets, so @vite/client's 'vite-hmr'
+// sockets are bridged here (see src/shims/vite-hmr-bridge-client.ts).
+let hmrBridge: BroadcastChannel | null = null;
+try {
+  hmrBridge = new BroadcastChannel('vite-hmr-bridge');
+} catch {
+  // BroadcastChannel not available in some environments
+}
+
+function hmrDebug(...args: unknown[]): void {
+  if (!hmrDiagEnabled()) return;
+  try {
+    console.log('[almostnode-hmr]', ...args);
+  } catch {
+    // Logging must never break the bridge path.
+  }
+}
+
 // Track all server instances
 const servers = new Map<string, WebSocketServer>();
 let clientIdCounter = 0;
@@ -60,6 +81,8 @@ export class WebSocket extends EventEmitter {
   private _id: string;
   private _server: WebSocketServer | null = null;
   private _nativeWs: globalThis.WebSocket | null = null;
+  private _bridge: BroadcastChannel | null = null;
+  private _clientId: string = '';
 
   // Event handler properties
   onopen: ((event: Event) => void) | null = null;
@@ -245,6 +268,18 @@ export class WebSocket extends EventEmitter {
       return;
     }
 
+    // Bridge client — a browser @vite/client tunneled over BroadcastChannel.
+    // Route the message back to the browser (server → client direction).
+    if (this._bridge) {
+      hmrDebug('bridge ws send→', this._clientId, String(data).slice(0, 100));
+      this._bridge.postMessage({
+        type: 'message',
+        targetClient: this._clientId,
+        payload: data,
+      });
+      return;
+    }
+
     // Send via BroadcastChannel
     if (messageChannel) {
       messageChannel.postMessage({
@@ -269,7 +304,15 @@ export class WebSocket extends EventEmitter {
       return;
     }
 
-    if (messageChannel) {
+    // Bridge client — tell the browser the socket is closed
+    if (this._bridge) {
+      this._bridge.postMessage({
+        type: 'close',
+        targetClient: this._clientId,
+        code,
+        reason,
+      });
+    } else if (messageChannel) {
       messageChannel.postMessage({
         type: 'disconnect',
         clientId: this._id,
@@ -304,6 +347,14 @@ export class WebSocket extends EventEmitter {
       this._nativeWs.close();
       this._nativeWs = null;
     }
+    if (this._bridge) {
+      this._bridge.postMessage({
+        type: 'close',
+        targetClient: this._clientId,
+        code: 1006,
+        reason: 'Connection terminated',
+      });
+    }
     this.readyState = WebSocket.CLOSED;
     const closeEvent = new CloseEventPolyfill('close', {
       code: 1006,
@@ -324,6 +375,16 @@ export class WebSocket extends EventEmitter {
     this.emit('message', msgEvent);
     if (this.onmessage) this.onmessage(msgEvent as unknown as MessageEvent);
   }
+
+  /**
+   * Deliver a raw message to server-side `socket.on('message')` listeners,
+   * matching the real `ws` API (the payload, not a MessageEvent wrapper).
+   * Used by the Vite HMR bridge so Vite can parse custom events like
+   * `vite:invalidate` sent by the browser client.
+   */
+  _receiveRaw(data: unknown): void {
+    this.emit('message', data);
+  }
 }
 
 export interface ServerOptions {
@@ -342,6 +403,7 @@ export class WebSocketServer extends EventEmitter {
   options: ServerOptions;
   private _path: string;
   private _channelHandler: ((event: MessageEvent) => void) | null = null;
+  private _hmrBridgeHandler: ((event: MessageEvent) => void) | null = null;
 
   constructor(options: ServerOptions = {}) {
     super();
@@ -353,8 +415,92 @@ export class WebSocketServer extends EventEmitter {
       this._setupListener();
     }
 
+    // Accept Vite HMR clients tunneled over BroadcastChannel (browser previews)
+    this._setupHmrBridge();
+
     // Register server
     servers.set(this._path, this);
+  }
+
+  /**
+   * Accept `@vite/client` connections that the browser-side shim tunnels over
+   * a BroadcastChannel (service workers can't proxy native WebSockets). Vite's
+   * HMR WebSocketServer is created with `noServer: true`, so it never receives
+   * real upgrade requests from the browser — this listener is the only path
+   * by which a browser client can reach it.
+   */
+  private _setupHmrBridge(): void {
+    if (!hmrBridge) return;
+
+    const channel = hmrBridge;
+    this._hmrBridgeHandler = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || typeof data !== 'object') return;
+
+      const isPing = data.protocol === 'vite-ping';
+      if (data.type === 'connect' && (data.protocol === 'vite-hmr' || isPing)) {
+        // Only accept connections targeting this server's path
+        const pathname = _urlPathname(data.url);
+        if (this._path !== '/' && pathname !== this._path) {
+          hmrDebug('bridge connect REJECTED (path)', { protocol: data.protocol, pathname, serverPath: this._path });
+          return;
+        }
+        hmrDebug('bridge connect', { protocol: data.protocol, clientId: data.clientId, pathname, serverPath: this._path });
+
+        // vite-ping sockets only need the handshake: answer 'connected' so the
+        // client's `open` fires (the ping resolves and the socket is closed
+        // immediately). Don't create a client or emit 'connection' so vite
+        // never registers a ping as an HMR client.
+        if (isPing) {
+          channel.postMessage({
+            type: 'connected',
+            targetClient: data.clientId,
+          });
+          return;
+        }
+
+        // Create the internal socket Vite will drive via wss.clients. Don't
+        // attach a _server so send() takes the BroadcastChannel branch, and set
+        // readyState synchronously because Vite sends "connected" immediately
+        // after the 'connection' event fires.
+        const ws = new WebSocket('internal://' + this._path);
+        (ws as unknown as { _bridge: BroadcastChannel | null })._bridge = channel;
+        (ws as unknown as { _clientId: string })._clientId = data.clientId;
+        ws.readyState = WebSocket.OPEN;
+        this.clients.add(ws);
+
+        channel.postMessage({
+          type: 'connected',
+          targetClient: data.clientId,
+        });
+
+        this.emit('connection', ws, { url: data.url });
+      }
+
+      if (data.type === 'message') {
+        for (const client of this.clients) {
+          const bridgeClient = client as unknown as { _bridge: BroadcastChannel | null; _clientId: string };
+          if (bridgeClient._bridge === channel && bridgeClient._clientId === data.clientId) {
+            hmrDebug('bridge ws recv', data.clientId, String(data.payload).slice(0, 100));
+            client._receiveRaw(data.payload);
+            break;
+          }
+        }
+      }
+
+      if (data.type === 'disconnect') {
+        for (const client of this.clients) {
+          const bridgeClient = client as unknown as { _bridge: BroadcastChannel | null; _clientId: string };
+          if (bridgeClient._bridge === channel && bridgeClient._clientId === data.clientId) {
+            this.clients.delete(client);
+            client.close(data.code, data.reason);
+            break;
+          }
+        }
+      }
+    };
+
+    channel.addEventListener('message', this._hmrBridgeHandler);
   }
 
   private _setupListener(): void {
@@ -448,6 +594,12 @@ export class WebSocketServer extends EventEmitter {
       this._channelHandler = null;
     }
 
+    // Remove HMR bridge listener
+    if (this._hmrBridgeHandler && hmrBridge) {
+      hmrBridge.removeEventListener('message', this._hmrBridgeHandler);
+      this._hmrBridgeHandler = null;
+    }
+
     this.emit('close');
 
     if (callback) {
@@ -473,3 +625,16 @@ export const Server = WebSocketServer;
 export const createWebSocketStream = () => {
   throw new Error('createWebSocketStream is not supported in browser');
 };
+
+/**
+ * Extract the pathname from a ws:// URL (used to match bridge connects to the
+ * server's configured path). Falls back to '/' for unparsable URLs.
+ */
+function _urlPathname(url: unknown): string {
+  if (typeof url !== 'string' || !url) return '/';
+  try {
+    return new URL(url).pathname || '/';
+  } catch {
+    return '/';
+  }
+}

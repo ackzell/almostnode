@@ -1,7 +1,7 @@
 /**
  * Service Worker for Mini WebContainers
  * Intercepts fetch requests and routes them to virtual servers
- * Version: 15 - cleanup: extract helpers, gate debug logs, remove test endpoints
+ * Version: 16 - always re-apply vite bundled-ws redirect on cached modules (HMR bridge)
  */
 
 const DEBUG = false;

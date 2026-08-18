@@ -21,16 +21,15 @@ almostnode is a **real competitor to WebContainers (StackBlitz)**. It runs Node.
 
 ## Real Vite Work (In Progress)
 
-Goal: run **real Vite** inside the browser via `vite.createServer()`, replacing the custom `ViteDevServer`.
+Goal: run **real Vite** inside the browser via `vite.createServer()`, replacing the custom `ViteDevServer`, and expose a **drop-in `@webcontainer/api` facade**.
 
-Status (Jan 2026 as of last verification):
-- `require('vite')` succeeds (Vite 7 from npm); `vite.createServer({ middlewareMode: true })` returns a working server. vite@8+ fails fast with a clear error.
-- `RealViteServer` (`src/frameworks/real-vite-server.ts`) serves HTML/JS/TS through real Vite middleware via the SW bridge; custom `@vite/client` HMR stub (`HMR_CLIENT_CODE`).
-- Exercised by `tests/vite-load.test.ts` (load, createServer, TS transform, serve via bridge, HMR client) and `examples/vue-real-vite-demo.html` + `src/vue-real-vite-demo.ts` (`npm run dev` → `/examples/vue-real-vite-demo.html`).
+Status (Aug 2026 as of last verification):
+- `require('vite')` succeeds (Vite 7 from npm); `vite.createServer({ middlewareMode: true })` returns a working server. vite@8+ fails fast with a clear error (`src/vite-version.ts`). Pin `vite@^7.0.0`.
+- **Live HMR works in the browser through the real-Vite `createServer` flow**: the wrapped `vite` bundle's bundled `ws` is redirected to the almostnode `ws` shim at every module load (cache hits included, `src/vite-ws-redirect.ts` + `src/runtime.ts`); a browser `window.WebSocket` shim tunnels `@vite/client` sockets over a `BroadcastChannel` to `WebSocketServer._setupHmrBridge` (`src/shims/ws.ts`, `src/shims/vite-hmr-bridge-client.ts`); and VFS edits are forwarded into Vite's graph via `setupVfsWatcher` (`src/vite-hmr-inject.ts`). Exercised end-to-end by `tests/vite-hmr-bridge.test.ts` and `e2e/vue-real-vite-demo.spec.ts`.
+- All `[almostnode-hmr]` logs are opt-in via `ALMOSTNODE_HMR_DIAG=1` / `globalThis.__ALMOSTNODE_HMR_DIAG__` (`src/shims/hmr-diag.ts`); silent by default.
+- Bridging the transport to the `vite` CLI / `almostnode/webcontainer` `pnpm run dev` path (beyond the createServer flow) and deprecating custom `ViteDevServer` are the next steps.
 
-vite@8 is unsupported: `require('vite')` and installs of vite@8+ fail fast with a clear error (`src/vite-version.ts`). Pin `vite@^7.0.0`.
-
-Config loading (`createRequire is not a function`) was fixed by externalizing node builtins for Node-target bundles in the esbuild shim (`src/shims/esbuild.ts`): Vite's `bundleConfigFile` runs with `platform: 'node'`, so the runtime's `require("node:module")` now provides `createRequire`. The remaining blocker is real Rollup's native binding (`native Rollup build … architecture undefined … use "@rollup/wasm-node"`) failing during `resolveConfig` — the `rollup` shim isn't catching that path yet.
+Key platform fixes that made real Vite work: `.mjs`/dual-package ESM preserved at install time; esbuild shim externalizes node builtins + native-binary packages, implements `context()`/`formatMessages()`/write-to-VFS; `process.arch`/`process.report` added; ESM→CJS default-import interop. Details in `AGENTS.md`.
 
 ## Release Process
 

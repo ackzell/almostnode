@@ -10,6 +10,7 @@ import type { IRuntime, IExecuteResult, IRuntimeOptions } from './runtime-interf
 import type { PackageJson } from './types/package-json';
 import { simpleHash } from './utils/hash';
 import { assertViteSupportedByPath } from './vite-version';
+import { wrapViteCreateServer } from './vite-hmr-inject';
 import { uint8ToBase64, uint8ToHex } from './utils/binary-encoding';
 import { createFsShim, FsShim } from './shims/fs';
 import * as pathShim from './shims/path';
@@ -55,6 +56,7 @@ import * as diagnosticsChannelShim from './shims/diagnostics_channel';
 import assertShim from './shims/assert';
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
 import { transformEsmToCjsSimple } from './frameworks/code-transforms';
+import { redirectViteBundledWsToShim } from './vite-ws-redirect';
 import * as acorn from 'acorn';
 
 /**
@@ -280,6 +282,38 @@ function fileUrlToPath(id: string): string {
   } catch {
     return id.slice(7);
   }
+}
+
+/**
+ * Decide whether a resolved module path belongs to the `vite` package without
+ * depending on a specific install layout. Matches plain `node_modules/vite`
+ * installs, pnpm/other virtual-store paths, and aliased/copied layouts by
+ * falling back to the nearest package.json `name`.
+ */
+function isViteModule(vfs: VirtualFS, resolvedPath: string): boolean {
+  if (resolvedPath.includes('/node_modules/vite/') ||
+      (resolvedPath.includes('/vite/') && resolvedPath.includes('/dist/node/'))) {
+    return true;
+  }
+
+  // Fallback: walk up from the module to find the owning package.json.
+  let dir = pathShim.dirname(resolvedPath);
+  for (let i = 0; i < 8; i++) {
+    try {
+      const pkgPath = pathShim.join(dir, 'package.json');
+      if (vfs.existsSync(pkgPath)) {
+        const name = JSON.parse(vfs.readFileSync(pkgPath, 'utf8')).name;
+        return name === 'vite';
+      }
+    } catch {
+      break;
+    }
+    const next = pathShim.dirname(dir);
+    if (next === dir) break;
+    dir = next;
+  }
+
+  return false;
 }
 
 export interface Module {
@@ -805,6 +839,21 @@ function createRequire(
       processedCodeCache?.set(codeCacheKey, code);
     }
 
+    // Vite bundles `ws` into its node dist chunks; redirect its bundled
+    // WebSocketServer to the platform ws shim so the HMR bridge
+    // (BroadcastChannel + browser WebSocket shim) can reach the HMR server.
+    // See src/vite-ws-redirect.ts. Re-applied on cache hits too: a long-lived
+    // worker's processedCodeCache may have been seeded before this redirect
+    // existed, and the redirect is idempotent/anchored so this is cheap and
+    // safe on every vite module load.
+    if (isViteModule(vfs, resolvedPath)) {
+      const before = code;
+      code = redirectViteBundledWsToShim(code, resolvedPath);
+      if (code !== before) {
+        processedCodeCache?.set(codeCacheKey, code);
+      }
+    }
+
     // Top-level await can't be satisfied synchronously via require(). Throw a
     // clear error (matching Node's ERR_REQUIRE_ASYNC_MODULE) instead of a
     // confusing SyntaxError from the plain-function wrapper.
@@ -888,6 +937,16 @@ ${code}
       throw error;
     }
 
+    // Auto-inject the almostnode HMR bridge into real Vite servers. Wrapping
+    // happens here (not in require()) because this is the single choke point
+    // shared by require() and the CLI's dynamic import() of the vite chunk.
+    // The wrap returns a Proxy over exports when it wraps createServer, so
+    // swap it back onto module.exports to make the wrap visible to consumers
+    // under every export shape (minified keys, renamed functions, nested).
+    if (isViteModule(vfs, resolvedPath)) {
+      module.exports = wrapViteCreateServer(module.exports, resolvedPath, vfs);
+    }
+
     return module;
   };
 
@@ -959,7 +1018,7 @@ ${code}
 
     // Fail fast on unsupported vite@8+ instead of letting vite throw cryptic
     // bootstrap errors (e.g. "createRequire is not a function") later.
-    if (resolved.includes('/node_modules/vite/')) {
+    if (isViteModule(vfs, resolved)) {
       assertViteSupportedByPath(vfs, resolved);
     }
 

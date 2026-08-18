@@ -67,6 +67,12 @@ Run `npm run type-check` and `npm run test:run` after any change before consider
 
 Goal: run **real Vite** inside the browser via `vite.createServer()`, replacing the custom `ViteDevServer`, and expose a **drop-in `@webcontainer/api` facade** so WebContainers apps can swap runtimes.
 
+Featured (@vitejs/plugin-vue HMR): `vite.createServer()` flow ships **live HMR in the browser**:
+- `viteHmrBridgePlugin` (`src/vite-hmr-inject.ts`) rewrites the loaded vite bundle so its bundled `ws` WebSocketServer is the almostnode `ws` shim (`src/vite-ws-redirect.ts`) — re-applied on **every** vite module load, cache hits included (`src/runtime.ts`), because a warm worker's module cache can predate the redirect.
+- A browser `window.WebSocket` shim (`src/shims/vite-hmr-bridge-client.ts`, injected via `VITE_HMR_BRIDGE_CLIENT` for `vite-hmr` paths) tunnels `@vite/client` sockets over a `BroadcastChannel` to `WebSocketServer._setupHmrBridge` in the container (`src/shims/ws.ts`).
+- VFS edits auto-forward into Vite's graph: `setupVfsWatcher` watches `server.config.root` recursively and emits on `server.watcher` + `moduleGraph.invalidateModule`, so an edit to a Vue SFC hot-updates in place (verified in `tests/vite-hmr-bridge.test.ts` which drives the full redirect→ack→update loop).
+- All `[almostnode-hmr]` logs are opt-in via `ALMOSTNODE_HMR_DIAG=1`/`globalThis.__ALMOSTNODE_HMR_DIAG__` (`src/shims/hmr-diag.ts`); silent by default.
+
 Verified (unit tests green on `vite@7`, and the amoxtli `vite` template now boots via `pnpm install` + `pnpm run dev` through `almostnode/webcontainer`):
 - `require('vite')` succeeds; `createServer({ middlewareMode: true })` returns a working server.
 - `RealViteServer` serves HTML/JS/TS/Vue SFCs through real Vite middleware via the SW bridge; custom `@vite/client` HMR stub.
