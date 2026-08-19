@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { VirtualFS } from '../src/virtual-fs';
+import { Writable } from '../src/shims/stream';
 
 describe('VirtualFS', () => {
   let vfs: VirtualFS;
@@ -244,6 +245,40 @@ describe('VirtualFS', () => {
     it('should resolve .. in paths', () => {
       vfs.writeFileSync('/a/b/../file.txt', 'content');
       expect(vfs.readFileSync('/a/file.txt', 'utf8')).toBe('content');
+    });
+  });
+
+  describe('createReadStream', () => {
+    it('should pipe file bytes to a destination Writable and end it', async () => {
+      vfs.writeFileSync('/stream.txt', 'hello stream');
+      const stream = vfs.createReadStream('/stream.txt');
+      const dest = new Writable();
+
+      const ended = new Promise<void>((resolve) => dest.on('finish', () => resolve()));
+      stream.pipe(dest);
+      await ended;
+
+      expect(dest.getBufferAsString()).toBe('hello stream');
+    });
+
+    it('should emit open before piping (static-server contract)', async () => {
+      vfs.writeFileSync('/stream2.txt', 'data');
+      const stream = vfs.createReadStream('/stream2.txt');
+      const opened = new Promise<number>((resolve) => stream.on('open', (fd: unknown) => resolve(fd as number)));
+      const fd = await opened;
+      expect(typeof fd).toBe('number');
+    });
+
+    it('should honor range start/end options', async () => {
+      vfs.writeFileSync('/range.txt', '0123456789');
+      const stream = vfs.createReadStream('/range.txt', { start: 2, end: 5 });
+      const dest = new Writable();
+
+      const ended = new Promise<void>((resolve) => dest.on('finish', () => resolve()));
+      stream.pipe(dest);
+      await ended;
+
+      expect(dest.getBufferAsString()).toBe('2345');
     });
   });
 });

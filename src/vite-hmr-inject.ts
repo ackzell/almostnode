@@ -197,7 +197,18 @@ export function wrapViteCreateServer(exports: any, sourcePath?: string, vfs?: an
         plugins = plugins.call(pluginConfig);
       }
       if (!Array.isArray(plugins)) plugins = [];
-      const config = { ...pluginConfig, plugins: [viteHmrBridgePlugin(vfs), ...plugins] };
+      // Platform default: disable Vite's dependency pre-bundling in the
+      // browser. The optimizer runs through the esbuild shim
+      // (context() -> full build() over the VFS plugin), which is far too slow
+      // on the main thread and stalls first-preview requests past the service
+      // worker's 30s timeout. Serve real ESM from node_modules instead (the
+      // proven RealViteServer config). An explicit caller-provided
+      // `optimizeDeps` is always respected.
+      const optimizeDeps = pluginConfig.optimizeDeps ?? { noDiscovery: true };
+      if (!pluginConfig.optimizeDeps) {
+        hmrDebug('platform optimizeDeps disabled', sourcePath);
+      }
+      const config = { ...pluginConfig, optimizeDeps, plugins: [viteHmrBridgePlugin(vfs), ...plugins] };
       return realCreateServer.call(this, config);
     } as CreateServer;
 

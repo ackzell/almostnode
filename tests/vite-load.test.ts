@@ -331,4 +331,44 @@ describe('Real Vite loading', () => {
       await server.close();
     }
   }, 30000);
+
+  it('serves a static node_modules package.json through vite middleware without hanging', async () => {
+    vfs.mkdirSync('/node_modules/vue', { recursive: true });
+    vfs.writeFileSync('/node_modules/vue/package.json', JSON.stringify({ name: 'vue', version: '3.5.35' }));
+
+    // Get vite and http modules from the Runtime
+    vfs.writeFileSync('/get-vite.js', 'module.exports = require("vite");');
+    vfs.writeFileSync('/get-http.js', 'module.exports = require("http");');
+    const viteModule = runtime.runFile('/get-vite.js').exports;
+    const httpModule = runtime.runFile('/get-http.js').exports;
+
+    const server = new RealViteServer(
+      () => viteModule,
+      () => httpModule,
+      { root: '/', port: 3003 },
+    );
+
+    await server.start();
+    try {
+      const serverInfo = (httpModule as any).getServer(3003);
+      expect(serverInfo).toBeTruthy();
+
+      // Raw fetch (main.ts: `fetch('/node_modules/vue/package.json')`) —
+      // not a JS module request, so it goes through vite's sirv static path.
+      // Regression: the VFS createReadStream stub never responded, so this
+      // request hung until the service worker's 30s timeout.
+      const response = await Promise.race([
+        serverInfo.handleRequest('GET', '/node_modules/vue/package.json', { 'accept': '*/*' }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('package.json request timed out (static serve hang)')), 5000)),
+      ]) as any;
+
+      const bodyStr = response.body instanceof Buffer
+        ? response.body.toString('utf8')
+        : new TextDecoder().decode(response.body);
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(bodyStr).version).toBe('3.5.35');
+    } finally {
+      await server.close();
+    }
+  }, 30000);
 });

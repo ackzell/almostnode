@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Static file serving no longer hangs**: `VirtualFS.createReadStream` was a non-functional stub (no-op `pipe`, never emitted `open`/data), so any non-transformed static request — e.g. `fetch('/node_modules/vue/package.json')` from an app's `main.ts` — stalled Vite's `serveStaticMiddleware` (sirv) until the service worker's 30s timeout. It's now a real `Readable` (emits `open`, honors range `start`/`end`, pipes bytes + end), fixing static assets, `/node_modules/*.json`, images, and fonts over the real-Vite/webcontainer path.
+- **Vite 7 optimizer knob**: the platform default for dep pre-bundling is now the vite-5.1+ supported `optimizeDeps: { noDiscovery: true }` instead of the removed `optimizeDeps.disabled` — in both `src/vite-hmr-inject.ts` (wrap default) and `RealViteServer`. A caller-provided `optimizeDeps` is still respected, and the vite deprecation warning is gone.
+
+### Added
+- **Regression tests**: `tests/vite-load.test.ts` serves `/node_modules/vue/package.json` over the SW bridge with a 5s guard (previously hung ~30s then 500'd); `tests/virtual-fs.test.ts` covers `createReadStream` pipe delivery, the `open` event, and range reads.
+
 ## [0.4.0] - 2026-08-18
 
 **Vite HMR now works end-to-end in the browser** for the real-Vite / webcontainer path. Preview starts, the bridge socket connects, and edits to a Vue SFC (or any self-accepting module) hot-update in place — no full page reload.

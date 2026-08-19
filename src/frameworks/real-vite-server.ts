@@ -149,7 +149,7 @@ export class RealViteServer {
       },
       appType: 'spa',
       logLevel: 'silent',
-      optimizeDeps: { disabled: true, noDiscovery: true },
+      optimizeDeps: { noDiscovery: true },
       esbuild: this.options.esbuild,
       plugins: this.options.plugins || [],
     });

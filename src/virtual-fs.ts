@@ -4,6 +4,7 @@
 
 import type { VFSSnapshot, VFSFileEntry } from './runtime-interface';
 import { uint8ToBase64, base64ToUint8 } from './utils/binary-encoding';
+import { Readable } from './shims/stream';
 
 export interface FSNode {
   type: 'file' | 'directory';
@@ -819,37 +820,23 @@ export class VirtualFS {
   }
 
   /**
-   * Create read stream - simplified implementation
+   * Create read stream - Node-compatible enough for static file servers
+   * (sirv/send) that await the stream's 'open' event and pipe it to the
+   * response. Emits 'open' with a fake fd, then reads the file bytes and
+   * pushes them, honoring range requests via opts.start/opts.end.
    */
-  createReadStream(path: string): {
-    on: (event: string, cb: (...args: unknown[]) => void) => void;
-    pipe: (dest: unknown) => unknown;
-  } {
-    const self = this;
-    const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
-
-    const stream = {
-      on(event: string, cb: (...args: unknown[]) => void) {
-        if (!listeners[event]) listeners[event] = [];
-        listeners[event].push(cb);
-        return stream;
-      },
-      pipe(dest: unknown) {
-        return dest;
-      },
-    };
-
-    // Emit data asynchronously
-    setTimeout(() => {
-      try {
-        const data = self.readFileSync(path);
-        listeners['data']?.forEach((cb) => cb(data));
-        listeners['end']?.forEach((cb) => cb());
-      } catch (err) {
-        listeners['error']?.forEach((cb) => cb(err));
-      }
-    }, 0);
-
+  createReadStream(path: string, opts?: { start?: number; end?: number }): Readable {
+    const stream = new Readable();
+    queueMicrotask(() => stream.emit('open', 1));
+    try {
+      const data = this.readFileSync(path);
+      const start = opts?.start ?? 0;
+      const end = opts?.end ?? data.length - 1;
+      stream.push(data.subarray(start, end + 1));
+      stream.push(null);
+    } catch (err) {
+      stream.destroy(err as Error);
+    }
     return stream;
   }
 
