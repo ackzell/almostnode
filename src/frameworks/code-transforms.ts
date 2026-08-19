@@ -359,6 +359,10 @@ function transformEsmToCjsAst(code: string): string {
 
   // Collect replacements as [start, end, replacement] sorted by start descending
   const replacements: Array<[number, number, string]> = [];
+  // A module mixing `export default` with named exports keeps the exports
+  // object (exports.default + named), so __esModule stays set and default
+  // interop never has to invoke warn-on-access getters.
+  const hasNamedExports = (ast.body as any[]).some((n: any) => n.type === 'ExportNamedDeclaration');
 
   for (const node of (ast as any).body) {
     if (node.type === 'ImportDeclaration') {
@@ -376,7 +380,7 @@ function transformEsmToCjsAst(code: string): string {
         const parts: string[] = [];
         if (defaultSpec) {
           parts.push(
-            `const ${defaultSpec.local.name} = ((m) => (m && typeof m === 'object' && ('default' in m || '__esModule' in m) ? m.default : m))(require(${JSON.stringify(source)}))`
+            `const ${defaultSpec.local.name} = (() => { const m = require(${JSON.stringify(source)}); if (m && typeof m === 'object' && '__esModule' in m) return m.default; const d = Object.getOwnPropertyDescriptor(m, 'default'); return d && 'value' in d ? d.value : m; })()`
           );
         }
         if (nsSpec) {
@@ -399,17 +403,18 @@ function transformEsmToCjsAst(code: string): string {
       }
     } else if (node.type === 'ExportDefaultDeclaration') {
       const decl = node.declaration;
+      const defaultTarget = hasNamedExports ? 'module.exports.default' : 'module.exports';
       if (decl.type === 'FunctionDeclaration') {
         // export default function X() {} → module.exports = function X() {}
         const funcCode = code.slice(decl.start, node.end);
-        replacements.push([node.start, node.end, `module.exports = ${funcCode}`]);
+        replacements.push([node.start, node.end, `${defaultTarget} = ${funcCode}`]);
       } else if (decl.type === 'ClassDeclaration') {
         const classCode = code.slice(decl.start, node.end);
-        replacements.push([node.start, node.end, `module.exports = ${classCode}`]);
+        replacements.push([node.start, node.end, `${defaultTarget} = ${classCode}`]);
       } else {
         // export default <expression>
         const exprCode = code.slice(decl.start, node.end);
-        replacements.push([node.start, node.end, `module.exports = ${exprCode}`]);
+        replacements.push([node.start, node.end, `${defaultTarget} = ${exprCode}`]);
       }
     } else if (node.type === 'ExportNamedDeclaration') {
       if (node.declaration) {
@@ -473,7 +478,7 @@ function transformEsmToCjsRegex(code: string): string {
 
   transformed = transformed.replace(
     /import\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g,
-    'const $1 = ((m) => (m && typeof m === "object" && ("default" in m || "__esModule" in m) ? m.default : m))(require("$2"))',
+    'const $1 = (() => { const m = require("$2"); if (m && typeof m === "object" && "__esModule" in m) return m.default; const d = Object.getOwnPropertyDescriptor(m, "default"); return d && "value" in d ? d.value : m; })()',
   );
   transformed = transformed.replace(
     /import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g,

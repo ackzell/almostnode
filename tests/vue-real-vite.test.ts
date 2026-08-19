@@ -14,14 +14,25 @@ describe('Real Vite serving .vue', () => {
   let vfs: VirtualFS;
   let runtime: Runtime;
   let npm: PackageManager;
+  let captured: string[];
 
   beforeAll(async () => {
+    captured = [];
     vfs = new VirtualFS();
     runtime = new Runtime(vfs, {
       cwd: '/',
       env: { NODE_ENV: 'development' },
-      onStdout: (data) => process.stdout.write('[vue:out] ' + data),
-      onStderr: (data) => process.stderr.write('[vue:err] ' + data),
+      onStdout: (data) => {
+        process.stdout.write('[vue:out] ' + data);
+        captured.push(String(data));
+      },
+      onStderr: (data) => {
+        process.stderr.write('[vue:err] ' + data);
+        captured.push(String(data));
+      },
+      onConsole: (method, args) => {
+        captured.push(method + ': ' + args.map(String).join(' '));
+      },
     });
     npm = new PackageManager(vfs, { cwd: '/' });
 
@@ -186,5 +197,39 @@ $primary: #42b983;
     } finally {
       await server.close();
     }
+  }, 60000);
+
+  it('loads sass via its resolved file:// path without triggering sass default-import deprecation', async () => {
+    // Vite's scss worker does `await import(sassPath)` then uses the namespace.
+    // The runtime's dynamic-import interop must not probe `.default` (sass's
+    // warn-on-access getter would emit: "import sass from 'sass' is deprecated").
+    vfs.mkdirSync('/src', { recursive: true });
+    vfs.writeFileSync('/src/style.scss', '$c: red; .x { color: $c; }\n');
+
+    vfs.writeFileSync('/get-vite.js', 'module.exports = require("vite");');
+    vfs.writeFileSync('/get-http.js', 'module.exports = require("http");');
+    const vite = runtime.runFile('/get-vite.js').exports as any;
+    const http = runtime.runFile('/get-http.js').exports as any;
+
+    const server = new RealViteServer(
+      () => vite,
+      () => http,
+      { root: '/', port: 3103, vfs, esbuild: false },
+    );
+
+    await server.start();
+    try {
+      const serverInfo = (http as any).getServer(3103);
+      const resp = await serverInfo.handleRequest('GET', '/src/style.scss', { 'accept': 'text/css' });
+      const css = resp.body instanceof Buffer
+        ? resp.body.toString('utf8')
+        : new TextDecoder().decode(resp.body);
+      expect(resp.statusCode).toBe(200);
+      expect(css).toContain('red');
+    } finally {
+      await server.close();
+    }
+
+    expect(captured.join('\n')).not.toMatch(/import sass from 'sass'/);
   }, 60000);
 });

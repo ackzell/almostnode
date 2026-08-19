@@ -7,12 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-19
+
 ### Added
 - **Opt-in debug logs**: every noisy runtime/transform/process/shim debug trace (`[runtime] Intercepted rollup`/`esbuild`, `[transform]` esbuild init + top-level-await skip, `[process] cwd()`/`chdir`, `[chokidar]`, `[zlib]`, `[rollup]`, `[fs]` `_generated` traces) is now gated behind `ALMOSTNODE_DEBUG=1` (env) or `globalThis.__ALMOSTNODE_DEBUG__` — silent by default (`src/shims/diag.ts`). The `[almostnode] loaded — version` banner still prints by default but can be silenced with `ALMOSTNODE_NO_VERSION=1`/`globalThis.__ALMOSTNODE_NO_VERSION__`.
 
 ### Fixed
 - **Static file serving no longer hangs**: `VirtualFS.createReadStream` was a non-functional stub (no-op `pipe`, never emitted `open`/data), so any non-transformed static request — e.g. `fetch('/node_modules/vue/package.json')` from an app's `main.ts` — stalled Vite's `serveStaticMiddleware` (sirv) until the service worker's 30s timeout. It's now a real `Readable` (emits `open`, honors range `start`/`end`, pipes bytes + end), fixing static assets, `/node_modules/*.json`, images, and fonts over the real-Vite/webcontainer path.
 - **Vite 7 optimizer knob**: the platform default for dep pre-bundling is now the vite-5.1+ supported `optimizeDeps: { noDiscovery: true }` instead of the removed `optimizeDeps.disabled` — in both `src/vite-hmr-inject.ts` (wrap default) and `RealViteServer`. A caller-provided `optimizeDeps` is still respected, and the vite deprecation warning is gone.
+- **sass "default import deprecated" noise gone**: loading `sass` through real Vite's css preprocessor (`await import(file:///node_modules/sass/...)`) no longer prints `` `import sass from 'sass'` is deprecated ``. Three interop fixes in the platform: `createDynamicImport` (`src/runtime.ts`) probes for a default export with `Object.getOwnPropertyDescriptor` instead of `'default' in`, the ESM→CJS default-import interop (`src/frameworks/code-transforms.ts`) never reads accessor-style `.default` getters, and modules mixing `export default` with named exports keep `exports.default` (+`__esModule`) instead of overwriting `module.exports` (which silently dropped named exports). sass's `sass.node.mjs` exports a default object whose every property is a warn-on-access getter; with these fixes the runtime reads the plain named re-exports (like Node's namespace) and never touches the getters. Regression test: `tests/vue-real-vite.test.ts` asserts no deprecation reaches container stderr/console during a `.scss` compile.
 
 ### Added
 - **Regression tests**: `tests/vite-load.test.ts` serves `/node_modules/vue/package.json` over the SW bridge with a 5s guard (previously hung ~30s then 500'd); `tests/virtual-fs.test.ts` covers `createReadStream` pipe delivery, the `open` event, and range reads.

@@ -247,8 +247,16 @@ function createDynamicImport(moduleRequire: RequireFunction): (specifier: string
     try {
       const mod = moduleRequire(specifier);
 
-      // If the module has a default export or is already ESM-like, return as-is
-      if (mod && typeof mod === 'object' && ('default' in (mod as object) || '__esModule' in (mod as object))) {
+      // If the module has a default export or is already ESM-like, return as-is.
+      // Use getOwnPropertyDescriptor (not `'default' in`) so we never invoke
+      // warn-on-access default-export getters (the `sass` package emits a
+      // console.error deprecation the first time `.default` is accessed).
+      if (
+        mod &&
+        typeof mod === 'object' &&
+        (Object.getOwnPropertyDescriptor(mod as object, 'default') !== undefined ||
+          '__esModule' in (mod as object))
+      ) {
         return mod;
       }
 
