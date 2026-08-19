@@ -72,6 +72,7 @@ Featured (@vitejs/plugin-vue HMR): `vite.createServer()` flow ships **live HMR i
 - A browser `window.WebSocket` shim (`src/shims/vite-hmr-bridge-client.ts`, injected via `VITE_HMR_BRIDGE_CLIENT` for `vite-hmr` paths) tunnels `@vite/client` sockets over a `BroadcastChannel` to `WebSocketServer._setupHmrBridge` in the container (`src/shims/ws.ts`).
 - VFS edits auto-forward into Vite's graph: `setupVfsWatcher` watches `server.config.root` recursively and emits on `server.watcher` + `moduleGraph.invalidateModule`, so an edit to a Vue SFC hot-updates in place (verified in `tests/vite-hmr-bridge.test.ts` which drives the full redirect→ack→update loop).
 - All `[almostnode-hmr]` logs are opt-in via `ALMOSTNODE_HMR_DIAG=1`/`globalThis.__ALMOSTNODE_HMR_DIAG__` (`src/shims/hmr-diag.ts`); silent by default.
+- Generic runtime/transform/process/shim debug logs (`[runtime] Intercepted rollup`, `[transform]`, `[process] cwd()`, `[chokidar]`, `[zlib]`, `[fs]` traces) are opt-in via `ALMOSTNODE_DEBUG=1`/`globalThis.__ALMOSTNODE_DEBUG__` (`src/shims/diag.ts`); silent by default. The `[almostnode] loaded — version` banner prints by default but can be silenced with `ALMOSTNODE_NO_VERSION=1`/`globalThis.__ALMOSTNODE_NO_VERSION__`.
 
 Verified (unit tests green on `vite@7`, and the amoxtli `vite` template now boots via `pnpm install` + `pnpm run dev` through `almostnode/webcontainer`):
 - `require('vite')` succeeds; `createServer({ middlewareMode: true })` returns a working server.

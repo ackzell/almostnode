@@ -22,8 +22,11 @@ import { getServerBridge, ServerBridge } from './server-bridge';
 import { spawnProcess, SpawnProcessHandle } from './shims/child_process';
 import { EventEmitter } from './shims/events';
 import * as path from './shims/path';
+import { versionBannerEnabled } from './shims/diag';
 
-console.log('[almostnode] webcontainer loaded — version:', typeof __ALMOSTNODE_VERSION__ !== 'undefined' ? __ALMOSTNODE_VERSION__ : 'dev');
+if (versionBannerEnabled()) {
+  console.log('[almostnode] webcontainer loaded — version:', typeof __ALMOSTNODE_VERSION__ !== 'undefined' ? __ALMOSTNODE_VERSION__ : 'dev');
+}
 
 // ── Types mirroring @webcontainer/api ─────────────────────────────────────
 

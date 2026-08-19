@@ -5,6 +5,7 @@
 
 import { Buffer } from './stream';
 import pako from 'pako';
+import { debugEnabled } from './diag';
 
 // Brotli WASM instance - loaded lazily
 type BrotliModule = { compress: (data: Uint8Array) => Uint8Array; decompress: (data: Uint8Array) => Uint8Array };
@@ -22,7 +23,7 @@ async function loadBrotli(): Promise<BrotliModule | null> {
         const brotliWasmModule = await import('brotli-wasm');
         // The default export is a promise that resolves to the module
         brotliModule = await brotliWasmModule.default;
-        console.log('[zlib] brotli-wasm loaded successfully');
+        if (debugEnabled()) console.log('[zlib] brotli-wasm loaded successfully');
         return brotliModule;
       } catch (error) {
         console.error('[zlib] Failed to load brotli-wasm:', error);

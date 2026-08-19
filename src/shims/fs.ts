@@ -6,6 +6,7 @@
 import { VirtualFS, createNodeError } from '../virtual-fs';
 import type { Stats, FSWatcher, WatchListener, WatchEventType } from '../virtual-fs';
 import { uint8ToBase64, uint8ToHex } from '../utils/binary-encoding';
+import { debugEnabled } from './diag';
 
 export type { Stats, FSWatcher, WatchListener, WatchEventType };
 
@@ -236,7 +237,7 @@ function trackCall(method: 'statSync' | 'readdirSync', path: string): void {
     console.warn(`[fs] ${method} called ${count}x on ${path}`);
     // Print full stack trace at 10 calls to see the call path
     const err = new Error();
-    console.log(`[fs] Stack at ${count} calls:`, err.stack?.split('\n').slice(1, 10).join('\n'));
+    if (debugEnabled()) console.log(`[fs] Stack at ${count} calls:`, err.stack?.split('\n').slice(1, 10).join('\n'));
   }
   if (count === 50) {
     console.warn(`[fs] Potential infinite loop: ${method} called ${count}+ times on ${path}`);
@@ -545,14 +546,14 @@ export function createFsShim(vfs: VirtualFS, getCwd?: () => string): FsShim {
           return new Dirent(name, isDir, isFile);
         });
         // Debug: Log readdirSync results for _generated
-        if (path.includes('_generated')) {
+        if (path.includes('_generated') && debugEnabled()) {
           console.log(`[fs] readdirSync(${path}, withFileTypes) -> [${dirents.map(d => d.name).join(', ')}]`);
         }
         return dirents;
       }
 
       // Debug: Log readdirSync results for _generated
-      if (path.includes('_generated')) {
+      if (path.includes('_generated') && debugEnabled()) {
         console.log(`[fs] readdirSync(${path}) -> [${entries.join(', ')}]`);
       }
       return entries;
@@ -564,7 +565,7 @@ export function createFsShim(vfs: VirtualFS, getCwd?: () => string): FsShim {
       trackCall('statSync', path);
       const result = vfs.statSync(path);
       // Debug: Log all statSync calls on _generated paths (show if path was modified)
-      if (path.includes('_generated')) {
+      if (path.includes('_generated') && debugEnabled()) {
         const wasRemapped = origPath !== path;
         console.log(`[fs] statSync(${origPath}${wasRemapped ? ' -> ' + path : ''}) -> isDir: ${result.isDirectory()}`);
       }
@@ -772,7 +773,7 @@ export function createFsShim(vfs: VirtualFS, getCwd?: () => string): FsShim {
     unlinkSync(pathLike: unknown): void {
       const path = resolvePath(pathLike);
       // Debug: Log unlink calls on _generated
-      if (path.includes('_generated')) {
+      if (path.includes('_generated') && debugEnabled()) {
         console.log(`[fs] unlinkSync(${path})`);
       }
       vfs.unlinkSync(path);

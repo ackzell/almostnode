@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Opt-in debug logs**: every noisy runtime/transform/process/shim debug trace (`[runtime] Intercepted rollup`/`esbuild`, `[transform]` esbuild init + top-level-await skip, `[process] cwd()`/`chdir`, `[chokidar]`, `[zlib]`, `[rollup]`, `[fs]` `_generated` traces) is now gated behind `ALMOSTNODE_DEBUG=1` (env) or `globalThis.__ALMOSTNODE_DEBUG__` — silent by default (`src/shims/diag.ts`). The `[almostnode] loaded — version` banner still prints by default but can be silenced with `ALMOSTNODE_NO_VERSION=1`/`globalThis.__ALMOSTNODE_NO_VERSION__`.
+
 ### Fixed
 - **Static file serving no longer hangs**: `VirtualFS.createReadStream` was a non-functional stub (no-op `pipe`, never emitted `open`/data), so any non-transformed static request — e.g. `fetch('/node_modules/vue/package.json')` from an app's `main.ts` — stalled Vite's `serveStaticMiddleware` (sirv) until the service worker's 30s timeout. It's now a real `Readable` (emits `open`, honors range `start`/`end`, pipes bytes + end), fixing static assets, `/node_modules/*.json`, images, and fonts over the real-Vite/webcontainer path.
 - **Vite 7 optimizer knob**: the platform default for dep pre-bundling is now the vite-5.1+ supported `optimizeDeps: { noDiscovery: true }` instead of the removed `optimizeDeps.disabled` — in both `src/vite-hmr-inject.ts` (wrap default) and `RealViteServer`. A caller-provided `optimizeDeps` is still respected, and the vite deprecation warning is gone.

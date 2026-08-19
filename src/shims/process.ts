@@ -5,6 +5,7 @@
  */
 
 import { EventEmitter, EventListener } from './events';
+import { debugEnabled } from './diag';
 
 export interface ProcessEnv {
   [key: string]: string | undefined;
@@ -221,18 +222,18 @@ export function createProcess(options?: {
       if (!proc._cwdCallCount) proc._cwdCallCount = 0;
       proc._cwdCallCount++;
       if (proc._cwdCallCount <= 5 || proc._cwdCallCount % 100 === 0) {
-        console.log(`[process] cwd() called (${proc._cwdCallCount}x), returning:`, currentDir);
+        if (debugEnabled()) console.log(`[process] cwd() called (${proc._cwdCallCount}x), returning:`, currentDir);
       }
       return currentDir;
     },
 
     chdir(directory: string) {
-      console.log('[process] chdir called:', directory, 'from:', currentDir);
+      if (debugEnabled()) console.log('[process] chdir called:', directory, 'from:', currentDir);
       if (!directory.startsWith('/')) {
         directory = currentDir + '/' + directory;
       }
       currentDir = directory;
-      console.log('[process] chdir result:', currentDir);
+      if (debugEnabled()) console.log('[process] chdir result:', currentDir);
     },
 
     platform: 'linux', // Pretend to be linux for better compatibility

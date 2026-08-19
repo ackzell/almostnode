@@ -5,7 +5,11 @@
  * with virtual file system and CommonJS module support
  */
 
-console.log('[almostnode] loaded — version:', typeof __ALMOSTNODE_VERSION__ !== 'undefined' ? __ALMOSTNODE_VERSION__ : 'dev');
+import { versionBannerEnabled } from './shims/diag';
+
+if (versionBannerEnabled()) {
+  console.log('[almostnode] loaded — version:', typeof __ALMOSTNODE_VERSION__ !== 'undefined' ? __ALMOSTNODE_VERSION__ : 'dev');
+}
 
 export { VirtualFS } from './virtual-fs';
 export type { FSNode, Stats, FSWatcher, WatchListener, WatchEventType } from './virtual-fs';

@@ -7,6 +7,7 @@
 
 import * as acorn from 'acorn';
 import { ROLLUP_BROWSER_CDN, ROLLUP_BROWSER_VERSION } from '../config/cdn';
+import { debugEnabled } from './diag';
 
 // Rollup instance loaded from CDN
 let rollupInstance: unknown = null;
@@ -27,7 +28,7 @@ async function loadRollup(): Promise<unknown> {
         ROLLUP_BROWSER_CDN
       );
       rollupInstance = rollup;
-      console.log('[rollup] Browser version loaded');
+      if (debugEnabled()) console.log('[rollup] Browser version loaded');
       return rollup;
     } catch (error) {
       console.error('[rollup] Failed to load browser version:', error);

@@ -7,6 +7,7 @@
 
 import { VirtualFS } from './virtual-fs';
 import { ESBUILD_WASM_ESM_CDN, ESBUILD_WASM_BINARY_CDN } from './config/cdn';
+import { debugEnabled } from './shims/diag';
 
 // Check if we're in a browser environment
 const isBrowser = typeof window !== 'undefined';
@@ -19,13 +20,13 @@ const isBrowser = typeof window !== 'undefined';
 export async function initTransformer(): Promise<void> {
   // Skip in non-browser environments (tests)
   if (!isBrowser) {
-    console.log('[transform] Skipping esbuild init (not in browser)');
+    if (debugEnabled()) console.log('[transform] Skipping esbuild init (not in browser)');
     return;
   }
 
   // Reuse existing esbuild instance from window (may have been initialized by next-dev-server)
   if (window.__esbuild) {
-    console.log('[transform] Reusing existing esbuild instance');
+    if (debugEnabled()) console.log('[transform] Reusing existing esbuild instance');
     return;
   }
 
@@ -36,7 +37,7 @@ export async function initTransformer(): Promise<void> {
 
   window.__esbuildInitPromise = (async () => {
     try {
-      console.log('[transform] Loading esbuild-wasm...');
+      if (debugEnabled()) console.log('[transform] Loading esbuild-wasm...');
 
       // Load esbuild-wasm from CDN
       const mod = await import(
@@ -51,11 +52,11 @@ export async function initTransformer(): Promise<void> {
         await esbuildMod.initialize({
           wasmURL: ESBUILD_WASM_BINARY_CDN,
         });
-        console.log('[transform] esbuild-wasm initialized');
+        if (debugEnabled()) console.log('[transform] esbuild-wasm initialized');
       } catch (initError) {
         // Handle "already initialized" error gracefully
         if (initError instanceof Error && initError.message.includes('Cannot call "initialize" more than once')) {
-          console.log('[transform] esbuild-wasm already initialized, reusing');
+          if (debugEnabled()) console.log('[transform] esbuild-wasm already initialized, reusing');
         } else {
           throw initError;
         }
@@ -153,7 +154,7 @@ export async function transformFile(
     // Check if it's a top-level await error - these files are usually CLI entry points
     const errorMsg = error instanceof Error ? error.message : String(error);
     if (errorMsg.includes('Top-level await')) {
-      console.log(`[transform] Skipping ${filename} (has top-level await, likely CLI entry point)`);
+      if (debugEnabled()) console.log(`[transform] Skipping ${filename} (has top-level await, likely CLI entry point)`);
       // Return original code - it won't be require()'d directly anyway
       return code;
     }

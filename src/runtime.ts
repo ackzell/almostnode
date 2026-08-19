@@ -54,6 +54,7 @@ import * as domainShim from './shims/domain';
 import * as diagnosticsChannelShim from './shims/diagnostics_channel';
 
 import assertShim from './shims/assert';
+import { debugEnabled } from './shims/diag';
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
 import { transformEsmToCjsSimple } from './frameworks/code-transforms';
 import { redirectViteBundledWsToShim } from './vite-ws-redirect';
@@ -1003,11 +1004,11 @@ ${code}
     // Intercept rollup, esbuild, and prettier - always use our shims
     // These packages have native binaries that don't work in browser
     if (id === 'rollup' || id.startsWith('rollup/') || id.startsWith('@rollup/')) {
-      console.log('[runtime] Intercepted rollup:', id);
+      if (debugEnabled()) console.log('[runtime] Intercepted rollup:', id);
       return builtinModules['rollup'];
     }
     if (id === 'esbuild' || id.startsWith('esbuild/') || id.startsWith('@esbuild/')) {
-      console.log('[runtime] Intercepted esbuild:', id);
+      if (debugEnabled()) console.log('[runtime] Intercepted esbuild:', id);
       return builtinModules['esbuild'];
     }
     // Intercept prettier - uses createRequire which doesn't work in our runtime
