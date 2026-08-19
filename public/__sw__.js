@@ -1,7 +1,8 @@
 /**
  * Service Worker for Mini WebContainers
  * Intercepts fetch requests and routes them to virtual servers
- * Version: 16 - always re-apply vite bundled-ws redirect on cached modules (HMR bridge)
+ * Version: 17 - only forward same-origin requests from virtual pages to the virtual
+ * server; cross-origin (CDNs, external APIs) pass through to the real network
  */
 
 const DEBUG = false;
@@ -273,6 +274,11 @@ async function handleNonVirtualFetch(event, url) {
       const clientUrl = new URL(client.url);
       const clientMatch = clientUrl.pathname.match(/^\/__virtual__\/(\d+)/);
       if (clientMatch) {
+        // Cross-origin resource from a virtual page (CDN, external API, fonts,
+        // images) — let it hit the real network instead of the virtual server.
+        if (url.origin !== clientUrl.origin) {
+          return fetch(event.request);
+        }
         const virtualPort = parseInt(clientMatch[1], 10);
         const targetPath = url.pathname + url.search;
 
@@ -296,6 +302,10 @@ async function handleNonVirtualFetch(event, url) {
       const refererUrl = new URL(referer);
       const refererMatch = refererUrl.pathname.match(/^\/__virtual__\/(\d+)/);
       if (refererMatch) {
+        // Cross-origin resource from a virtual page — pass through to the network.
+        if (url.origin !== refererUrl.origin) {
+          return fetch(event.request);
+        }
         const virtualPrefix = refererMatch[0];
         const virtualPort = parseInt(refererMatch[1], 10);
         const targetPath = url.pathname + url.search;
