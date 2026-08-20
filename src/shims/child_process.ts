@@ -29,6 +29,7 @@ import type { VirtualFS } from '../virtual-fs';
 import { VirtualFSAdapter } from './vfs-adapter';
 import { Runtime } from '../runtime';
 import type { PackageJson } from '../types/package-json';
+import { streamDiag, streamDiagEnabled, previewChunk } from './stream-diag';
 
 // Singleton bash instance - uses VFS adapter for two-way file sync
 let bashInstance: Bash | null = null;
@@ -70,12 +71,18 @@ export function setStreamingCallbacks(opts: {
   _streamStdout = opts.onStdout || null;
   _streamStderr = opts.onStderr || null;
   _abortSignal = opts.signal || null;
+  if (streamDiagEnabled()) {
+    streamDiag('callbacks', 'set', `stdout=${opts.onStdout ? 1 : 0}`, `stderr=${opts.onStderr ? 1 : 0}`, `signal=${opts.signal ? 1 : 0}`);
+  }
 }
 
 /**
  * Clear streaming callbacks after command execution.
  */
 export function clearStreamingCallbacks(): void {
+  if (streamDiagEnabled()) {
+    streamDiag('callbacks', 'clear', `stdoutWasSet=${_streamStdout ? 1 : 0}`, `stderrWasSet=${_streamStderr ? 1 : 0}`);
+  }
   _streamStdout = null;
   _streamStderr = null;
   _abortSignal = null;
@@ -87,6 +94,7 @@ export function clearStreamingCallbacks(): void {
  * WebContainerProcess output stream (and the terminal panel).
  */
 export function forwardStdout(data: string): void {
+  if (streamDiagEnabled()) streamDiag('fwd-ext', 'stdout', String(data.length), `sink=${_streamStdout ? 1 : 0}`, previewChunk(data));
   if (_streamStdout) _streamStdout(data);
 }
 
@@ -94,7 +102,106 @@ export function forwardStdout(data: string): void {
  * Forward a chunk to the active streaming stderr callback (if any).
  */
 export function forwardStderr(data: string): void {
+  if (streamDiagEnabled()) streamDiag('fwd-ext', 'stderr', String(data.length), `sink=${_streamStderr ? 1 : 0}`, previewChunk(data));
   if (_streamStderr) _streamStderr(data);
+}
+
+// ── Global-console capture (Layer C) ──────────────────────────────────
+// Temporarily wraps globalThis.console while a `node` command runs so
+// output that bypasses the per-module wrapped console (i.e. code reaching
+// `globalThis.console` directly — typically async callbacks running after
+// the synchronous module-execution wrap window has closed) still lands in
+// the process output stream, like a real Node console→stdout/stderr write.
+// Calls that arrive via createConsoleWrapper set `__almostnode_in_wrap` and
+// are skipped, since the wrapped-console path already forwarded that call.
+//
+// Each wrap installs its own wrapper chain (capturing the previous console
+// method as `orig`) and routes through `_layerStdout`/`_layerStderr`, the
+// current command's append functions. This is robust to nesting (pnpm →
+// node) and to a stale wrapper that outlives its command (an orphaned dev
+// server after an abort): a new spawn re-wraps and re-targets cleanly, so
+// async global-console output reaches the live stream instead of a dead
+// command's buffer.
+
+interface ConsoleAppend {
+  (data: string, src?: string): void;
+}
+
+interface LayerTarget {
+  stdout: ConsoleAppend;
+  stderr: ConsoleAppend;
+  methods: Map<string, (...args: unknown[]) => void>;
+}
+
+const _layerStack: LayerTarget[] = [];
+let _layerStdout: ConsoleAppend = () => {};
+let _layerStderr: ConsoleAppend = () => {};
+
+function formatConsoleArgs(args: unknown[]): string {
+  return args.map((a) => String(a)).join(' ') + '\n';
+}
+
+function globalConsoleOrigin(): string {
+  try {
+    const lines = new Error().stack?.split('\n') ?? [];
+    for (let i = 1; i < Math.min(lines.length, 12); i++) {
+      const line = lines[i].trim().replace(/^at\s+/, '');
+      if (!line || line === 'Error' || line.includes('/stream-diag') || line.includes('shims/child_process')) {
+        continue;
+      }
+      return line.slice(0, 160);
+    }
+    return '<unknown>';
+  } catch {
+    return '<unknown>';
+  }
+}
+
+function wrapGlobalConsole(appendStdout: ConsoleAppend, appendStderr: ConsoleAppend): void {
+  const g = globalThis as unknown as { console?: Record<string, unknown> };
+  const target: LayerTarget = { stdout: appendStdout, stderr: appendStderr, methods: new Map() };
+  _layerStack.push(target);
+  _layerStdout = appendStdout;
+  _layerStderr = appendStderr;
+  if (!g.console) return;
+  for (const name of ['log', 'warn', 'error', 'info']) {
+    const current = g.console[name];
+    if (typeof current !== 'function') continue;
+    const currentFn = current as unknown as (...args: unknown[]) => void;
+    target.methods.set(name, currentFn);
+    g.console[name] = (...args: unknown[]) => {
+      const gw = globalThis as { __almostnode_in_wrap?: unknown };
+      if (gw.__almostnode_in_wrap) return;
+      const msg = formatConsoleArgs(args);
+      if (name === 'error' || name === 'warn') {
+        _layerStderr(msg, `onConsole:${name}`);
+      } else {
+        _layerStdout(msg, `onConsole:${name}`);
+      }
+      if (streamDiagEnabled()) {
+        streamDiag('globalc', name, globalConsoleOrigin(), String(msg.length), previewChunk(msg));
+        try {
+          currentFn(...args);
+        } catch {
+          // Mirror only for debugging; must never break the stream path.
+        }
+      }
+    };
+  }
+}
+
+function unwrapGlobalConsole(): void {
+  const target = _layerStack.pop();
+  const top = _layerStack[_layerStack.length - 1];
+  _layerStdout = top?.stdout ?? (() => {});
+  _layerStderr = top?.stderr ?? (() => {});
+  if (!target) return;
+  const g = globalThis as unknown as { console?: Record<string, unknown> };
+  if (g.console) {
+    for (const [name, prev] of target.methods) {
+      g.console[name] = prev;
+    }
+  }
 }
 
 // Reference to the currently running node command's process stdin.
@@ -159,32 +266,38 @@ export function initChildProcess(vfs: VirtualFS): void {
     const exitPromise = new Promise<number>((resolve) => { exitResolve = resolve; });
 
     // Helper to append to stdout, also streaming if configured
-    const appendStdout = (data: string) => {
+    const appendStdout = (data: string, src = 'onStdout') => {
       stdout += data;
+      if (streamDiagEnabled()) streamDiag('fwd', src, String(data.length), `sink=${_streamStdout ? 1 : 0}`, previewChunk(data));
       if (_streamStdout) _streamStdout(data);
     };
-    const appendStderr = (data: string) => {
+    const appendStderr = (data: string, src = 'onStderr') => {
       stderr += data;
+      if (streamDiagEnabled()) streamDiag('fwd', src, String(data.length), `sink=${_streamStderr ? 1 : 0}`, previewChunk(data));
       if (_streamStderr) _streamStderr(data);
     };
+
+    // Capture output that bypasses the per-module console wrapper (i.e.
+    // direct `globalThis.console` usage). See wrapGlobalConsole() above.
+    wrapGlobalConsole(appendStdout, appendStderr);
 
     // Create a runtime with output capture for both console.log AND process.stdout.write
     const runtime = new Runtime(currentVfs, {
       cwd: ctx.cwd,
       env: ctx.env,
       onConsole: (method, consoleArgs) => {
-        const msg = consoleArgs.map(a => String(a)).join(' ') + '\n';
+        const msg = formatConsoleArgs(consoleArgs);
         if (method === 'error') {
-          appendStderr(msg);
+          appendStderr(msg, `onConsole:${method}`);
         } else {
-          appendStdout(msg);
+          appendStdout(msg, `onConsole:${method}`);
         }
       },
       onStdout: (data: string) => {
-        appendStdout(data);
+        appendStdout(data, 'process.stdout.write');
       },
       onStderr: (data: string) => {
-        appendStderr(data);
+        appendStderr(data, 'process.stderr.write');
       },
     });
 
@@ -224,12 +337,14 @@ export function initChildProcess(vfs: VirtualFS): void {
     } catch (error) {
       // process.exit() throws to stop execution — this is expected
       if (error instanceof Error && error.message.startsWith('Process exited with code')) {
+        unwrapGlobalConsole();
         return { stdout, stderr, exitCode };
       }
       // Real error
       const errorMsg = error instanceof Error
         ? `${error.message}\n${error.stack || ''}`
         : String(error);
+      unwrapGlobalConsole();
       return { stdout, stderr: stderr + `Error: ${errorMsg}\n`, exitCode: 1 };
     } finally {
       // After runFile returns, switch to async mode (no more throwing from process.exit)
@@ -238,6 +353,7 @@ export function initChildProcess(vfs: VirtualFS): void {
 
     // If process.exit was called synchronously (but didn't throw for some reason), return
     if (exitCalled) {
+      unwrapGlobalConsole();
       return { stdout, stderr, exitCode };
     }
 
@@ -247,6 +363,7 @@ export function initChildProcess(vfs: VirtualFS): void {
     if (stdout.length > 0 || stderr.length > 0) {
       // Brief pause for any trailing microtasks
       await new Promise(r => setTimeout(r, 0));
+      unwrapGlobalConsole();
       return { stdout, stderr, exitCode: exitCalled ? exitCode : 0 };
     }
 
@@ -328,6 +445,7 @@ export function initChildProcess(vfs: VirtualFS): void {
 
       return { stdout, stderr, exitCode: exitCalled ? exitCode : 0 };
     } finally {
+      unwrapGlobalConsole();
       _activeProcessStdin = null;
       _onForkedChildExit = prevChildExitHandler;
       globalThis.removeEventListener('unhandledrejection', rejectionHandler);
@@ -895,18 +1013,28 @@ export function spawnProcess(
     ? `${command} ${args.map(arg => (arg.includes(' ') ? `"${arg}"` : arg)).join(' ')}`
     : command;
 
+  let enqSeq = 0;
+  const enqueue = (kind: 'out' | 'err', data: string): boolean => {
+    try {
+      outputController?.enqueue(data.replace(/\n/g, '\r\n'));
+      if (streamDiagEnabled()) streamDiag('enq', kind, String(++enqSeq), String(data.length), 'ok');
+      return true;
+    } catch {
+      if (streamDiagEnabled()) streamDiag('enq', kind, String(++enqSeq), String(data.length), 'err');
+      return false;
+    }
+  };
+
   const exit = new Promise<number>((resolve) => {
+    if (streamDiagEnabled()) streamDiag('spawn', fullCommand);
     setStreamingCallbacks({
-      onStdout: (data) => {
-        try { outputController?.enqueue(data.replace(/\n/g, '\r\n')); } catch { /* stream closed */ }
-      },
-      onStderr: (data) => {
-        try { outputController?.enqueue(data.replace(/\n/g, '\r\n')); } catch { /* stream closed */ }
-      },
+      onStdout: (data) => { enqueue('out', data); },
+      onStderr: (data) => { enqueue('err', data); },
       signal: controller.signal,
     });
 
     exec(fullCommand, { cwd: options.cwd, env }, (error, _stdout, _stderr) => {
+      if (streamDiagEnabled()) streamDiag('spawn-done', fullCommand, `code=${(error as { code?: unknown } | null)?.code ?? 0}`);
       clearStreamingCallbacks();
       try { outputController?.close(); } catch { /* already closed */ }
       const code = error && typeof (error as { code?: unknown }).code === 'number'

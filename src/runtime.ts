@@ -55,6 +55,7 @@ import * as diagnosticsChannelShim from './shims/diagnostics_channel';
 
 import assertShim from './shims/assert';
 import { debugEnabled } from './shims/diag';
+import { streamDiag, streamDiagEnabled, previewChunk } from './shims/stream-diag';
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
 import { transformEsmToCjsSimple } from './frameworks/code-transforms';
 import { redirectViteBundledWsToShim } from './vite-ws-redirect';
@@ -788,10 +789,18 @@ function createRequire(
   };
 
   const loadModule = (resolvedPath: string): Module => {
+    const probeViteCache = (mode: 'hit' | 'fresh') => {
+      if (!streamDiagEnabled() || !isViteModule(vfs, resolvedPath)) return;
+      streamDiag('cache', mode, resolvedPath, `onConsole=${options.onConsole ? 1 : 0}`);
+    };
+
     // Return cached module
     if (moduleCache[resolvedPath]) {
+      probeViteCache('hit');
       return moduleCache[resolvedPath];
     }
+
+    probeViteCache('fresh');
 
     // Create module object
     const module: Module = {
@@ -885,7 +894,7 @@ function createRequire(
     moduleRequire.cache = moduleCache;
 
     // Create console wrapper
-    const consoleWrapper = createConsoleWrapper(options.onConsole);
+    const consoleWrapper = createConsoleWrapper(options.onConsole, resolvedPath);
 
     // Execute module code
     // We use an outer/inner function pattern to avoid conflicts:
@@ -1066,37 +1075,81 @@ ${code}
 
 /**
  * Create a console wrapper that can capture output
+ *
+ * Console methods are captured at creation time and invoked via `callRaw`,
+ * which sets a re-entrancy marker so `[almostnode-stream]` global-console
+ * capture (Layer C) can tell wrap-dispatched logs apart from genuine
+ * global-console usage and skip them. Behavior-identical in normal operation.
  */
 function createConsoleWrapper(
-  onConsole?: (method: string, args: unknown[]) => void
+  onConsole?: (method: string, args: unknown[]) => void,
+  label?: string
 ): Console {
+  const rawConsole = (globalThis as { console?: Console }).console;
+  const rawLog = rawConsole?.log?.bind(rawConsole);
+  const rawError = rawConsole?.error?.bind(rawConsole);
+  const rawWarn = rawConsole?.warn?.bind(rawConsole);
+  const rawInfo = rawConsole?.info?.bind(rawConsole);
+  const rawDebug = rawConsole?.debug?.bind(rawConsole);
+  const rawTrace = rawConsole?.trace?.bind(rawConsole);
+  const rawDir = rawConsole?.dir?.bind(rawConsole);
+
+  const callRaw = (fn: ((...a: unknown[]) => void) | undefined, args: unknown[]) => {
+    const g = globalThis as { __almostnode_in_wrap?: unknown };
+    const target = fn ?? ((..._a: unknown[]) => {});
+    g.__almostnode_in_wrap = true;
+    try {
+      target(...args);
+    } finally {
+      g.__almostnode_in_wrap = false;
+    }
+  };
+
+  const trace = (method: string, args: unknown[]) => {
+    if (!streamDiagEnabled()) return;
+    let joined = '';
+    try {
+      joined = args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ');
+    } catch {
+      joined = '<unstringifiable>';
+    }
+    streamDiag('wrap', method, label ?? '<no-label>', String(joined.length), `onConsole=${onConsole ? 1 : 0}`, previewChunk(joined));
+  };
+
   const wrapper = {
     log: (...args: unknown[]) => {
-      console.log(...args);
+      callRaw(rawLog, args);
+      trace('log', args);
       onConsole?.('log', args);
     },
     error: (...args: unknown[]) => {
-      console.error(...args);
+      callRaw(rawError, args);
+      trace('error', args);
       onConsole?.('error', args);
     },
     warn: (...args: unknown[]) => {
-      console.warn(...args);
+      callRaw(rawWarn, args);
+      trace('warn', args);
       onConsole?.('warn', args);
     },
     info: (...args: unknown[]) => {
-      console.info(...args);
+      callRaw(rawInfo, args);
+      trace('info', args);
       onConsole?.('info', args);
     },
     debug: (...args: unknown[]) => {
-      console.debug(...args);
+      callRaw(rawDebug, args);
+      trace('debug', args);
       onConsole?.('debug', args);
     },
     trace: (...args: unknown[]) => {
-      console.trace(...args);
+      callRaw(rawTrace, args);
+      trace('trace', args);
       onConsole?.('trace', args);
     },
     dir: (obj: unknown) => {
-      console.dir(obj);
+      callRaw(rawDir, [obj]);
+      trace('dir', [obj]);
       onConsole?.('dir', [obj]);
     },
     time: console.time.bind(console),
@@ -1434,7 +1487,7 @@ export class Runtime {
     this.moduleCache[filename] = module;
 
     // Create console wrapper
-    const consoleWrapper = createConsoleWrapper(this.options.onConsole);
+    const consoleWrapper = createConsoleWrapper(this.options.onConsole, filename);
 
     // Transform code the same way loadModule does
     // Strip shebang line if present (e.g. #!/usr/bin/env node)
@@ -1624,7 +1677,7 @@ ${code}
       this.options,
       this.processedCodeCache
     );
-    const consoleWrapper = createConsoleWrapper(this.options.onConsole);
+    const consoleWrapper = createConsoleWrapper(this.options.onConsole, '<repl>');
     const process = this.process;
     const buffer = bufferShim.Buffer;
 

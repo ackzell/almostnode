@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Async/global `console` output now reaches the terminal**: output that bypasses the runtime's per-module console wrapper — i.e. code calling `globalThis.console` directly from async callbacks running after the synchronous module-execution window has closed (exactly how Vite's startup banner is printed from `server.listen`) — is captured by the node command's global-console wrap and forwarded into the process output stream the same way `process.stdout/err.write` is. The browser-side console is no longer used as the sink for container output; it only mirrors when `ALMOSTNODE_STREAM_DIAG=1` is enabled for debugging. Layer C re-wraps and re-targets per spawn (robust to a stale wrap left behind by an orphaned nested dev server after an abort), so a restarted command's async output is never lost. Regression test: `tests/webcontainer-api.test.ts` drives a vite-style async `globalThis.console` banner through `wc.spawn()` and asserts it lands in `proc.output` exactly once and never in the browser console.
+- **`[almostnode-stream]` diagnostics**: added an opt-in trace (`streamDiag`) covering the whole console→stream path — runtime wrapper (`wrap`), global-console capture (`globalc`), stream forwarding (`fwd`), spawn enqueue (`enq`), Vite cache probe (`cache`), and streaming-callback lifecycle (`callbacks` set/clear, `spawn-done`) — gated behind `ALMOSTNODE_STREAM_DIAG=1` (env) or `globalThis.__ALMOSTNODE_STREAM_DIAG__` (`src/shims/stream-diag.ts`). Silent by default.
+
 ## [0.5.1] - 2026-08-19
 
 ### Added

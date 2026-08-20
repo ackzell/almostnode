@@ -368,4 +368,53 @@ describe('WebContainer (almostnode/webcontainer)', () => {
     proc.kill();
     await proc.exit;
   });
+
+  it('routes async globalThis.console output (vite-banner style) into proc.output, terminal only', async () => {
+    wc = await WebContainer.boot();
+    await wc.mount({
+      'banner.js': {
+        file: {
+          contents: `
+            await new Promise((r) => setTimeout(r, 20));
+            globalThis.console.log('  VITE v7.3.6 ready in 617 ms');
+            globalThis.console.log('  \u279c  Local:   http://localhost:5173/');
+            globalThis.console.warn('  \u279c  warn from async global console');
+            setTimeout(() => process.exit(0), 10);
+          `,
+        },
+      },
+    });
+
+    // Browser-level console must NOT receive the banner (terminal only) —
+    // real-env emulation: console.log writes to stdout, which is the
+    // process.output stream the terminal panel reads.
+    const browserConsoleLines: string[] = [];
+    const origLog = console.log.bind(console) as (...args: unknown[]) => void;
+    console.log = ((...args: unknown[]) => {
+      browserConsoleLines.push(args.map(String).join(' '));
+    }) as typeof console.log;
+
+    const proc = await wc.spawn('node', ['banner.js']);
+
+    let outputText = '';
+    const reader = proc.output.getReader() as ReadableStreamDefaultReader<string>;
+    const drain = (async () => {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        outputText += value;
+      }
+    })();
+
+    const code = await proc.exit;
+    await drain;
+    console.log = origLog;
+
+    expect(code).toBe(0);
+    expect(outputText).toContain('VITE v7.3.6 ready in 617 ms');
+    expect(outputText).toContain('Local:   http://localhost:5173/');
+    expect(outputText).toContain('warn from async global console');
+    expect(outputText.split('VITE v7.3.6 ready').length - 1).toBe(1);
+    expect(browserConsoleLines.some((l) => l.includes('VITE v7.3.6 ready'))).toBe(false);
+  });
 });
