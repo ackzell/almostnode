@@ -157,6 +157,19 @@ function globalConsoleOrigin(): string {
   }
 }
 
+const HOST_PAGE_FRAME_PATTERNS = [
+  'floating-vue',
+  'floatingVue',
+  'FloatingVue',
+];
+
+function isHostPageFrame(stack: string): boolean {
+  for (const pat of HOST_PAGE_FRAME_PATTERNS) {
+    if (stack.includes(pat)) return true;
+  }
+  return false;
+}
+
 function wrapGlobalConsole(appendStdout: ConsoleAppend, appendStderr: ConsoleAppend): void {
   const g = globalThis as unknown as { console?: Record<string, unknown> };
   const target: LayerTarget = { stdout: appendStdout, stderr: appendStderr, methods: new Map() };
@@ -172,6 +185,10 @@ function wrapGlobalConsole(appendStdout: ConsoleAppend, appendStderr: ConsoleApp
     g.console[name] = (...args: unknown[]) => {
       const gw = globalThis as { __almostnode_in_wrap?: unknown };
       if (gw.__almostnode_in_wrap) return;
+      try {
+        const stack = new Error().stack || '';
+        if (isHostPageFrame(stack)) return;
+      } catch { /* proceed if stack capture fails */ }
       const msg = formatConsoleArgs(args);
       if (name === 'error' || name === 'warn') {
         _layerStderr(msg, `onConsole:${name}`);
@@ -504,6 +521,96 @@ export function initChildProcess(vfs: VirtualFS): void {
     }
   });
 
+  const jshCommand = defineCommand('jsh', async (args, ctx) => {
+    if (args[0] === '-c') {
+      const cmd = args.slice(1).join(' ');
+      return ctx.exec?.(cmd, { cwd: ctx.cwd, env: ctx.env })
+        || { stdout: '', stderr: '', exitCode: 0 };
+    }
+
+    let currentDir = ctx.cwd;
+    let lineBuffer = '';
+    let lineResolve: ((line: string | null) => void) | null = null;
+
+    const stdin = new EventEmitter();
+    _activeProcessStdin = stdin;
+
+    function resolvePath(cwd: string, target: string): string {
+      if (target === '' || target === '~') return '/home/user';
+      if (target.startsWith('~/')) target = '/home/user' + target.slice(1);
+      if (!target.startsWith('/')) target = `${cwd}/${target}`;
+      const parts = target.split('/').filter(Boolean);
+      const result: string[] = [];
+      for (const p of parts) {
+        if (p === '..') result.pop();
+        else if (p !== '.') result.push(p);
+      }
+      return '/' + result.join('/');
+    }
+
+    stdin.on('data', (data: string) => {
+      for (const ch of data) {
+        if (ch === '\r' || ch === '\n') {
+          _streamStdout?.('\r\n');
+          const line = lineBuffer;
+          lineBuffer = '';
+          lineResolve?.(line);
+          lineResolve = null;
+        } else if (ch === '\x7f' || ch === '\b') {
+          if (lineBuffer.length > 0) {
+            lineBuffer = lineBuffer.slice(0, -1);
+            _streamStdout?.('\b \b');
+          }
+        } else if (ch === '\x03') {
+          lineBuffer = '';
+          _streamStdout?.('^C\r\n$ ');
+        } else if (ch >= ' ') {
+          lineBuffer += ch;
+          _streamStdout?.(ch);
+        }
+      }
+    });
+
+    _streamStdout?.('$ ');
+
+    while (!_abortSignal?.aborted) {
+      const line = await new Promise<string | null>((resolve) => {
+        lineResolve = resolve;
+      });
+
+      if (line === null || _abortSignal?.aborted) break;
+      if (line.trim() === '') { _streamStdout?.('$ '); continue; }
+      if (line === 'exit' || line === 'quit') break;
+
+      if (line === 'cd' || line.startsWith('cd ')) {
+        const target = line === 'cd' ? '~' : line.slice(3).trim();
+        currentDir = resolvePath(currentDir, target);
+        _streamStdout?.('$ ');
+        continue;
+      }
+
+      if (line.trim() === 'pwd') {
+        _streamStdout?.(currentDir + '\r\n$ ');
+        continue;
+      }
+
+      try {
+        const result = await ctx.exec?.(line, { cwd: currentDir, env: ctx.env });
+        if (result?.stdout) _streamStdout?.(result.stdout.replace(/\n/g, '\r\n'));
+        if (result?.stderr) _streamStderr?.(result.stderr.replace(/\n/g, '\r\n'));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        _streamStderr?.(msg + '\r\n');
+      }
+
+      _activeProcessStdin = stdin;
+      _streamStdout?.('$ ');
+    }
+
+    _activeProcessStdin = null;
+    return { stdout: '', stderr: '', exitCode: 0 };
+  });
+
   bashInstance = new Bash({
     fs: vfsAdapter,
     cwd: '/',
@@ -515,6 +622,7 @@ export function initChildProcess(vfs: VirtualFS): void {
     },
     customCommands: [
       nodeCommand,
+      jshCommand,
       createPackageManagerCommand('npm'),
       createPackageManagerCommand('pnpm'),
       createPackageManagerCommand('yarn'),
@@ -1035,7 +1143,10 @@ export function spawnProcess(
 
     exec(fullCommand, { cwd: options.cwd, env }, (error, _stdout, _stderr) => {
       if (streamDiagEnabled()) streamDiag('spawn-done', fullCommand, `code=${(error as { code?: unknown } | null)?.code ?? 0}`);
-      clearStreamingCallbacks();
+      // Don't clear streaming callbacks here. When a new process starts
+      // before the old one's callback fires (e.g. Ctrl+C → kill → respawn),
+      // the old clearStreamingCallbacks would wipe the new process's callbacks.
+      // setStreamingCallbacks() in the next spawnProcess overwrites them anyway.
       try { outputController?.close(); } catch { /* already closed */ }
       const code = error && typeof (error as { code?: unknown }).code === 'number'
         ? (error as unknown as { code: number }).code
