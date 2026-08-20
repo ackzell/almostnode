@@ -287,8 +287,17 @@ function viteHmrBridgePlugin(vfs?: any): any {
  * watched dir) and forward them onto `server.watcher`, which Vite's
  * invalidation pipeline listens to. Ignore dependency/artefact dirs.
  */
+const watchedServers = new WeakSet<object>();
+
 function setupVfsWatcher(server: any, vfs: any): void {
   if (!vfs?.watch || !server?.watcher?.emit) return;
+
+  // Guard: only register one VFS watcher per server instance. configureServer
+  // may be called more than once for the same server (e.g. Nuxt's plugin
+  // pipeline), which would otherwise create duplicate watchers and fire HMR
+  // twice.
+  if (watchedServers.has(server)) return;
+  watchedServers.add(server);
 
   const root = (server.config?.root || '/') as string;
   const ignored = (p: string): boolean => /(^|\/)(node_modules|\.git|\.vite|\.nuxt|\.output|dist)(\/|$)/.test(p);

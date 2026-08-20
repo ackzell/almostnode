@@ -122,7 +122,6 @@ export class RealViteServer {
   private httpServer: any = null;
   private _closed = false;
   private _hmrTarget: Window | null = null;
-  private _watcherCleanup: (() => void) | null = null;
 
   constructor(
     getVite: () => any,
@@ -192,8 +191,10 @@ export class RealViteServer {
 
     this.httpServer = http.createServer(listener);
 
-    // Set up VFS watcher for HMR
-    this._setupWatcher();
+    // VFS file changes are forwarded into server.watcher by the
+    // viteHmrBridgePlugin (setupVfsWatcher in vite-hmr-inject.ts), so no
+    // separate VFS watcher is needed here — it would cause duplicate HMR
+    // updates.
 
     return new Promise((resolve, reject) => {
       this.httpServer.listen(this.options.port, () => {
@@ -202,85 +203,9 @@ export class RealViteServer {
     });
   }
 
-  private _setupWatcher(): void {
-    const vfs = this.options.vfs;
-    if (!vfs) return;
-
-    const watchDir = this.options.root === '/' ? '/src' : `${this.options.root}/src`;
-
-    try {
-      const watcher = vfs.watch(watchDir, { recursive: true }, (eventType: string, filename: string) => {
-        if (eventType === 'change' && filename) {
-          const fullPath = filename.startsWith('/') ? filename : `${watchDir}/${filename}`;
-          this._handleFileChange(fullPath);
-        }
-      });
-      this._watcherCleanup = () => watcher.close();
-    } catch {
-    }
-
-    // Also watch CSS in root
-    try {
-      const rootWatcher = vfs.watch(this.options.root, { recursive: false }, (eventType: string, filename: string) => {
-        if (eventType === 'change' && filename) {
-          this._handleFileChange(`${this.options.root}/${filename}`);
-        }
-      });
-      const prevCleanup = this._watcherCleanup;
-      this._watcherCleanup = () => {
-        prevCleanup?.();
-        rootWatcher.close();
-      };
-    } catch {
-    }
-  }
-
-  private _handleFileChange(path: string): void {
-    const isCSS = path.endsWith('.css');
-    const isJS = /\.(jsx?|tsx?)$/.test(path);
-    const updateType = (isCSS || isJS) ? 'update' : 'full-reload';
-
-    // Invalidate Vite's internal module graph so it re-reads from VFS.
-    // The most reliable way is to feed a 'change' event through Vite's own
-    // watcher (chokidar shim), which Vite's invalidation pipeline listens to.
-    try {
-      const server = this.viteServer as any;
-      if (server?.watcher?.emit) {
-        server.watcher.emit('change', path);
-      }
-    } catch {
-    }
-    try {
-      const server = this.viteServer as any;
-      const mod = server?.moduleGraph?.getModuleById(path);
-      if (mod) {
-        server.moduleGraph.invalidateModule(mod);
-      }
-    } catch {
-    }
-
-    const update = {
-      type: updateType,
-      path,
-      timestamp: Date.now(),
-    };
-
-    if (this._hmrTarget) {
-      try {
-        this._hmrTarget.postMessage({ ...update, channel: 'vite-hmr' }, '*');
-      } catch {
-      }
-    }
-  }
-
   async close(): Promise<void> {
     if (this._closed) return;
     this._closed = true;
-
-    if (this._watcherCleanup) {
-      this._watcherCleanup();
-      this._watcherCleanup = null;
-    }
 
     this._hmrTarget = null;
 
