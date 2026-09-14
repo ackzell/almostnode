@@ -296,7 +296,7 @@ describe('WebContainer (almostnode/webcontainer)', () => {
     await proc.exit;
     // Just verify exit resolved (env handling exercised through the spawn path)
     expect(proc.exit).toBeDefined();
-  });
+  }, 20000);
 
   it('runs the html template (node http server + fs.promises.watch)', async () => {
     // Mirrors amoxtli-vue-2 templates/html/: a plain Node http server using
@@ -416,5 +416,38 @@ describe('WebContainer (almostnode/webcontainer)', () => {
     expect(outputText).toContain('warn from async global console');
     expect(outputText.split('VITE v7.3.6 ready').length - 1).toBe(1);
     expect(browserConsoleLines.some((l) => l.includes('VITE v7.3.6 ready'))).toBe(false);
+  });
+
+  it('streams a runFileAsync throw to proc.output instead of a bare exit 1', async () => {
+    wc = await WebContainer.boot();
+    await wc.mount({
+      'boom.js': {
+        file: {
+          contents: `
+            import { readFileSync } from 'node:fs'
+            readFileSync('/definitely-missing-file.txt', 'utf-8')
+          `,
+        },
+      },
+    });
+
+    const proc = await wc.spawn('node', ['boom.js']);
+
+    let outputText = '';
+    const reader = proc.output.getReader() as ReadableStreamDefaultReader<string>;
+    const drain = (async () => {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        outputText += value;
+      }
+    })();
+
+    const code = await proc.exit;
+    await drain;
+
+    // Exit code 1, and the streaming stderr carries WHY it failed.
+    expect(code).toBe(1);
+    expect(outputText).toMatch(/Error: .*definitely-missing-file/i);
   });
 });

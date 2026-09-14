@@ -51,6 +51,7 @@ import {
   executeApiHandler,
 } from './next-api-handler';
 import { createVfsRequire, type VfsModule } from './vfs-require';
+import { tagSource } from '../source-tag';
 import { bundleNpmModuleForBrowser, clearNpmBundleCache, initNpmServe } from './npm-serve';
 import { ESBUILD_WASM_ESM_CDN, ESBUILD_WASM_BINARY_CDN } from '../config/cdn';
 
@@ -760,7 +761,7 @@ export class NextDevServer extends DevServer {
         Object.assign(builtins, this.options.apiModules);
       }
       const vfsRequire = this.createApiVfsRequire(builtins);
-      const result = await executeApiHandler(transformed, req, res, this.options.env, builtins, vfsRequire);
+      const result = await executeApiHandler(transformed, req, res, this.options.env, builtins, vfsRequire, apiFile);
 
       // If the handler returned a Response object, convert it to ResponseData
       if (result instanceof Response) {
@@ -843,7 +844,7 @@ export class NextDevServer extends DevServer {
         versions: { node: '18.0.0' },
       };
 
-      const fn = new Function('exports', 'require', 'module', 'process', transformed);
+      const fn = new Function('exports', 'require', 'module', 'process', tagSource(transformed, routeFile));
       fn(exports, require, moduleObj, process);
 
       // Get the handler for the HTTP method
@@ -986,7 +987,7 @@ export class NextDevServer extends DevServer {
         Object.assign(builtins, this.options.apiModules);
       }
       const vfsRequire = this.createApiVfsRequire(builtins);
-      const result = await executeApiHandler(transformed, req, res, this.options.env, builtins, vfsRequire);
+      const result = await executeApiHandler(transformed, req, res, this.options.env, builtins, vfsRequire, apiFile);
 
       // If the handler returned a Response object (Web API style), stream it
       // directly. This lets Pages Router handlers use `return new Response()`
@@ -1070,7 +1071,7 @@ export class NextDevServer extends DevServer {
         versions: { node: '18.0.0' },
       };
 
-      const fn = new Function('exports', 'require', 'module', 'process', transformed);
+      const fn = new Function('exports', 'require', 'module', 'process', tagSource(transformed, routeFile));
       fn(exports, require, moduleObj, process);
 
       // Get the handler for the HTTP method

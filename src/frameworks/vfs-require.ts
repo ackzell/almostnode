@@ -14,6 +14,7 @@ import { VirtualFS } from '../virtual-fs';
 import { resolve as resolveExports } from 'resolve.exports';
 import * as pathShim from '../shims/path';
 import { transformEsmToCjsSimple } from './code-transforms';
+import { tagSource } from '../source-tag';
 import type { PackageJson } from '../types/package-json';
 
 export interface VfsModule {
@@ -217,7 +218,7 @@ export function createVfsRequire(
       const moduleObj = { exports: mod.exports as Record<string, unknown> };
       const fn = new Function(
         'exports', 'require', 'module', '__filename', '__dirname', 'process',
-        code,
+        tagSource(code, resolvedPath),
       );
       fn(moduleObj.exports, moduleRequire, moduleObj, resolvedPath, dirname, process);
 

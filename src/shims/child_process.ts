@@ -30,6 +30,7 @@ import { VirtualFSAdapter } from './vfs-adapter';
 import { Runtime } from '../runtime';
 import type { PackageJson } from '../types/package-json';
 import { streamDiag, streamDiagEnabled, previewChunk } from './stream-diag';
+import { isContainerSourceStack } from '../source-tag';
 
 // Singleton bash instance - uses VFS adapter for two-way file sync
 let bashInstance: Bash | null = null;
@@ -115,6 +116,15 @@ export function forwardStderr(data: string): void {
 // Calls that arrive via createConsoleWrapper set `__almostnode_in_wrap` and
 // are skipped, since the wrapped-console path already forwarded that call.
 //
+// On the main thread the host page shares globalThis.console with the
+// container, so the wrap also sees host-page calls. Forwarding is decided
+// by an allowlist, not a package-name blocklist: container code evaluated
+// by the runtime carries a `//# sourceURL=almostnode:<path>` tag
+// (src/source-tag.ts), which survives any amount of host-bundle
+// minification. A call is forwarded only when its stack contains at least
+// one tagged frame; anything else is host-page noise and passes through to
+// the original console untouched.
+//
 // Each wrap installs its own wrapper chain (capturing the previous console
 // method as `orig`) and routes through `_layerStdout`/`_layerStderr`, the
 // current command's append functions. This is robust to nesting (pnpm →
@@ -157,19 +167,6 @@ function globalConsoleOrigin(): string {
   }
 }
 
-const HOST_PAGE_FRAME_PATTERNS = [
-  'floating-vue',
-  'floatingVue',
-  'FloatingVue',
-];
-
-function isHostPageFrame(stack: string): boolean {
-  for (const pat of HOST_PAGE_FRAME_PATTERNS) {
-    if (stack.includes(pat)) return true;
-  }
-  return false;
-}
-
 function wrapGlobalConsole(appendStdout: ConsoleAppend, appendStderr: ConsoleAppend): void {
   const g = globalThis as unknown as { console?: Record<string, unknown> };
   const target: LayerTarget = { stdout: appendStdout, stderr: appendStderr, methods: new Map() };
@@ -185,10 +182,18 @@ function wrapGlobalConsole(appendStdout: ConsoleAppend, appendStderr: ConsoleApp
     g.console[name] = (...args: unknown[]) => {
       const gw = globalThis as { __almostnode_in_wrap?: unknown };
       if (gw.__almostnode_in_wrap) return;
+      let containerOrigin = false;
       try {
-        const stack = new Error().stack || '';
-        if (isHostPageFrame(stack)) return;
-      } catch { /* proceed if stack capture fails */ }
+        containerOrigin = isContainerSourceStack(new Error().stack);
+      } catch {
+        containerOrigin = false;
+      }
+      if (!containerOrigin) {
+        // Host-page call (no tagged frame in the stack): leave it for the
+        // original console chain so host devtools keep working.
+        currentFn(...args);
+        return;
+      }
       const msg = formatConsoleArgs(args);
       if (name === 'error' || name === 'warn') {
         _layerStderr(msg, `onConsole:${name}`);
@@ -362,7 +367,13 @@ export function initChildProcess(vfs: VirtualFS): void {
         ? `${error.message}\n${error.stack || ''}`
         : String(error);
       unwrapGlobalConsole();
-      return { stdout, stderr: stderr + `Error: ${errorMsg}\n`, exitCode: 1 };
+      // Forward the failure to the streaming stderr so spawnProcess consumers
+      // (and the terminal) see why the process died, instead of only the
+      // buffered `stderr`. Without this, a throw in runFileAsync surfaces as a
+      // bare exit code 1 with an empty output stream.
+      const errText = `Error: ${errorMsg}\n`;
+      if (_streamStderr) _streamStderr(errText);
+      return { stdout, stderr: stderr + errText, exitCode: 1 };
     } finally {
       // After runFile returns, switch to async mode (no more throwing from process.exit)
       syncExecution = false;
@@ -388,7 +399,8 @@ export function initChildProcess(vfs: VirtualFS): void {
     // Wait for process.exit() or until output stabilizes.
     // Also catch unhandled rejections from async code to surface errors.
 
-    // Catch unhandled rejections from the script's async code
+    // Catch unhandled rejections from the script's async code. Some embedding
+    // environments (minimal runtimes, test VMs) have no global event target.
     const rejectionHandler = (event: PromiseRejectionEvent) => {
       const reason = event.reason;
       // Ignore process.exit throws (they're expected)
@@ -401,7 +413,9 @@ export function initChildProcess(vfs: VirtualFS): void {
         : `Unhandled rejection: ${String(reason)}\n`;
       appendStderr(msg);
     };
-    globalThis.addEventListener('unhandledrejection', rejectionHandler);
+    if (typeof globalThis.addEventListener === 'function') {
+      globalThis.addEventListener('unhandledrejection', rejectionHandler);
+    }
 
     // Listen for forked child exits to shorten the idle timeout.
     // Many CLI tools (vitest, jest, etc.) fork workers and exit shortly after
@@ -419,6 +433,12 @@ export function initChildProcess(vfs: VirtualFS): void {
       const IDLE_TIMEOUT_MS = 500;
       const POST_CHILD_EXIT_IDLE_MS = 100; // short timeout after children finish
       const CHECK_MS = 50;
+      // Real Node exits when the event loop drains. We can't observe handles,
+      // but a script that finished executing synchronously, produced no output
+      // and forked nothing has nothing left to do — even in long-running mode,
+      // give async startups this grace window to produce their first output
+      // before concluding the script is a silent one-shot.
+      const SILENT_STARTUP_GRACE_MS = 10000;
       const startTime = Date.now();
       let lastOutputLen = stdout.length + stderr.length;
       let idleMs = 0;
@@ -454,6 +474,14 @@ export function initChildProcess(vfs: VirtualFS): void {
         if (!isLongRunning) {
           const effectiveIdle = childrenExited ? POST_CHILD_EXIT_IDLE_MS : IDLE_TIMEOUT_MS;
           if (lastOutputLen > 0 && idleMs >= effectiveIdle) break;
+        } else if (
+          lastOutputLen === 0 &&
+          _activeForkedChildren === 0 &&
+          Date.now() - startTime >= SILENT_STARTUP_GRACE_MS
+        ) {
+          // Silent one-shot script under a streaming (killable) spawn: nothing
+          // ever printed and no children are running — treat as drained.
+          break;
         }
 
         // Hard timeout (skip for long-running commands)
@@ -465,7 +493,9 @@ export function initChildProcess(vfs: VirtualFS): void {
       unwrapGlobalConsole();
       _activeProcessStdin = null;
       _onForkedChildExit = prevChildExitHandler;
-      globalThis.removeEventListener('unhandledrejection', rejectionHandler);
+      if (typeof globalThis.removeEventListener === 'function') {
+        globalThis.removeEventListener('unhandledrejection', rejectionHandler);
+      }
     }
   });
 

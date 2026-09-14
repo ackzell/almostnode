@@ -2,6 +2,10 @@
  * vm shim - Basic VM functionality using eval
  */
 
+import { tagSource } from '../source-tag';
+
+const VM_TAG_PATH = '/<vm>';
+
 export class Script {
   private code: string;
 
@@ -10,13 +14,13 @@ export class Script {
   }
 
   runInThisContext(_options?: object): unknown {
-    return eval(this.code);
+    return eval(tagSource(this.code, VM_TAG_PATH));
   }
 
   runInNewContext(contextObject?: object, _options?: object): unknown {
     const keys = contextObject ? Object.keys(contextObject) : [];
     const values = contextObject ? Object.values(contextObject) : [];
-    const fn = new Function(...keys, `return eval(${JSON.stringify(this.code)})`);
+    const fn = new Function(...keys, `return eval(${JSON.stringify(tagSource(this.code, VM_TAG_PATH))})`);
     return fn(...values);
   }
 
@@ -38,7 +42,7 @@ export function isContext(_sandbox: object): boolean {
 }
 
 export function runInThisContext(code: string, _options?: object): unknown {
-  return eval(code);
+  return eval(tagSource(code, VM_TAG_PATH));
 }
 
 export function runInNewContext(code: string, contextObject?: object, _options?: object): unknown {
@@ -51,7 +55,7 @@ export function runInContext(code: string, context: object, _options?: object): 
 }
 
 export function compileFunction(code: string, params?: string[], _options?: object): Function {
-  return new Function(...(params || []), code);
+  return new Function(...(params || []), tagSource(code, VM_TAG_PATH));
 }
 
 export class Module {

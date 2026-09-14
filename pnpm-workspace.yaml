@@ -1,0 +1,5 @@
+allowBuilds:
+  '@mongodb-js/zstd': true
+  '@swc/core': true
+  esbuild: true
+  node-liblzma: true

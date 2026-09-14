@@ -58,6 +58,7 @@ import { debugEnabled } from './shims/diag';
 import { streamDiag, streamDiagEnabled, previewChunk } from './shims/stream-diag';
 import { resolve as resolveExports, imports as resolveImports } from 'resolve.exports';
 import { transformEsmToCjsSimple } from './frameworks/code-transforms';
+import { tagSource } from './source-tag';
 import { redirectViteBundledWsToShim } from './vite-ws-redirect';
 import * as acorn from 'acorn';
 
@@ -903,7 +904,7 @@ function createRequire(
     // - import.meta is provided for ESM code that uses it
     try {
       const importMetaUrl = 'file://' + resolvedPath;
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport) {
+      const wrappedCode = tagSource(`(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport) {
 var exports = $exports;
 var require = $require;
 var module = $module;
@@ -920,7 +921,7 @@ global.process = $process;
 return (function() {
 ${code}
 }).call(this);
-})`;
+})`, resolvedPath);
 
       let fn;
       try {
@@ -1511,7 +1512,7 @@ export class Runtime {
     try {
       const importMetaUrl = 'file://' + filename;
       const inner = hasTLA ? 'async function' : 'function';
-      const wrappedCode = `(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport) {
+      const wrappedCode = tagSource(`(function($exports, $require, $module, $filename, $dirname, $process, $console, $importMeta, $dynamicImport) {
 var exports = $exports;
 var require = $require;
 var module = $module;
@@ -1529,7 +1530,7 @@ global.process = $process;
 return (${inner}() {
 ${code}
 }).call(this);
-})`;
+})`, filename);
 
       // Create dynamic import function for this module context
       const dynamicImport = createDynamicImport(require);

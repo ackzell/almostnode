@@ -6,6 +6,7 @@
 
 import { ResponseData } from '../dev-server';
 import { Buffer } from '../shims/stream';
+import { tagSource } from '../source-tag';
 
 /**
  * Parse cookie header into key-value pairs
@@ -299,7 +300,8 @@ export async function executeApiHandler(
   res: MockResponse | StreamingMockResponse,
   env: Record<string, string> | undefined,
   builtinModules: Record<string, unknown>,
-  vfsRequire?: (id: string) => unknown
+  vfsRequire?: (id: string) => unknown,
+  sourcePath?: string
 ): Promise<unknown> {
   try {
     const require = (id: string): unknown => {
@@ -329,7 +331,7 @@ export async function executeApiHandler(
     };
 
     // Execute the transformed code
-    const fn = new Function('exports', 'require', 'module', 'process', code);
+    const fn = new Function('exports', 'require', 'module', 'process', tagSource(code, sourcePath || '/<api-handler>'));
     fn(exports, require, module, process);
 
     // Get the handler - check both module.exports and module.exports.default
